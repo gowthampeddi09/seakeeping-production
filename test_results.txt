@@ -1,0 +1,25 @@
+Device: cpu
+>>> Loading dataset from synthetic_data/physics...
+Loading 360 simulation files from synthetic_data/physics...
+    Testing on 15000 samples...
+>>> Loading checkpoint from checkpoints/best.pth...
+>>> Running Inference...
+
+=======================================================
+                 FINAL TEST METRICS
+=======================================================
+Max Roll Regression MSE : 7.7511
+Max Roll Regression MAE : 0.9298 degrees
+-------------------------------------------------------
+Classification Report (Danger Alert System):
+  0: Safe | 1: Danger
+              precision    recall  f1-score   support
+
+        Safe       1.00      1.00      1.00     44424
+      Danger       0.99      0.99      0.99       576
+
+    accuracy                           1.00     45000
+   macro avg       1.00      1.00      1.00     45000
+weighted avg       1.00      1.00      1.00     45000
+
+=======================================================

@@ -1,0 +1,100 @@
+Device: cpu
+>>> Loading training data from directory: synthetic_data/physics
+Loading 360 simulation files from synthetic_data/physics...
+    Train samples: 648000  |  Batches/epoch: 20250
+    Split -> Train: 583200, Val: 64800
+>>> Model parameters: 4,079,907
+
+======================================================================
+  PHASE 1: WARM-UP (5 Epochs) | Freeze Periodic Branch
+======================================================================
+
+Phase 1 - Epoch 1/5 │ Train Loss: 1314.271465 │ Time: 1384.0s │ Val Loss: 10.146241
+Phase 1 - Epoch 2/5 │ Train Loss: 17.439034 │ Time: 1382.5s │ Val Loss: 10.113318
+Phase 1 - Epoch 3/5 │ Train Loss: 13.926471 │ Time: 1346.2s │ Val Loss: 10.072221
+Phase 1 - Epoch 4/5 │ Train Loss: 12.914717 │ Time: 1348.1s │ Val Loss: 10.028543
+Phase 1 - Epoch 5/5 │ Train Loss: 10.674794 │ Time: 1349.1s │ Val Loss: 9.934406
+
+======================================================================
+  PHASE 2: FULL TRAINING (50 Epochs) | Unfreeze All
+======================================================================
+
+Phase 2 - Epoch   1/50 │ Train Loss: 10.083521 │ Time: 2738.6s │ Val Loss: 9.867292 ★
+Phase 2 - Epoch   2/50 │ Train Loss: 10.117360 │ Time: 2736.0s │ Val Loss: 9.797084 ★
+Phase 2 - Epoch   3/50 │ Train Loss: 9.942396 │ Time: 2750.2s │ Val Loss: 9.782418 ★
+Phase 2 - Epoch   4/50 │ Train Loss: 9.867477 │ Time: 2741.5s │ Val Loss: 9.658555 ★
+Phase 2 - Epoch   5/50 │ Train Loss: 10.151760 │ Time: 2747.0s │ Val Loss: 9.573588 ★
+Phase 2 - Epoch   6/50 │ Train Loss: 9.881849 │ Time: 2790.0s │ Val Loss: 9.514158 ★
+Phase 2 - Epoch   7/50 │ Train Loss: 9.717327 │ Time: 2788.6s │ Val Loss: 9.550848
+Phase 2 - Epoch   8/50 │ Train Loss: 9.646736 │ Time: 2754.7s │ Val Loss: 9.442225 ★
+Phase 2 - Epoch   9/50 │ Train Loss: 9.623700 │ Time: 2751.6s │ Val Loss: 9.428195 ★
+Phase 2 - Epoch  10/50 │ Train Loss: 9.605492 │ Time: 2747.5s │ Val Loss: 9.441242
+Phase 2 - Epoch  11/50 │ Train Loss: 11.020436 │ Time: 2753.8s │ Val Loss: 9.395030 ★
+Phase 2 - Epoch  12/50 │ Train Loss: 9.534018 │ Time: 2743.4s │ Val Loss: 9.349310 ★
+Phase 2 - Epoch  13/50 │ Train Loss: 9.523589 │ Time: 2737.7s │ Val Loss: 9.339758 ★
+Phase 2 - Epoch  14/50 │ Train Loss: 9.498605 │ Time: 2744.5s │ Val Loss: 9.348630
+Phase 2 - Epoch  15/50 │ Train Loss: 9.780478 │ Time: 2742.3s │ Val Loss: 9.306067 ★
+Phase 2 - Epoch  16/50 │ Train Loss: 9.462179 │ Time: 2742.4s │ Val Loss: 9.286074 ★
+Phase 2 - Epoch  17/50 │ Train Loss: 9.448438 │ Time: 2749.6s │ Val Loss: 9.290455
+Phase 2 - Epoch  18/50 │ Train Loss: 9.434660 │ Time: 2757.4s │ Val Loss: 9.270747 ★
+Phase 2 - Epoch  19/50 │ Train Loss: 9.423788 │ Time: 2753.9s │ Val Loss: 9.256785 ★
+Phase 2 - Epoch  20/50 │ Train Loss: 9.413252 │ Time: 2745.4s │ Val Loss: 9.240140 ★
+Phase 2 - Epoch  21/50 │ Train Loss: 9.403974 │ Time: 2740.1s │ Val Loss: 9.234545 ★
+Phase 2 - Epoch  22/50 │ Train Loss: 9.393418 │ Time: 2742.6s │ Val Loss: 9.231255 ★
+Phase 2 - Epoch  23/50 │ Train Loss: 9.386117 │ Time: 2749.2s │ Val Loss: 9.219817 ★
+Phase 2 - Epoch  24/50 │ Train Loss: 9.375952 │ Time: 2746.1s │ Val Loss: 9.221931
+Phase 2 - Epoch  25/50 │ Train Loss: 9.370920 │ Time: 2738.2s │ Val Loss: 9.210773 ★
+Phase 2 - Epoch  26/50 │ Train Loss: 9.362529 │ Time: 2748.5s │ Val Loss: 9.203086 ★
+Phase 2 - Epoch  27/50 │ Train Loss: 9.356737 │ Time: 2761.1s │ Val Loss: 9.192951 ★
+Phase 2 - Epoch  28/50 │ Train Loss: 9.351123 │ Time: 2761.5s │ Val Loss: 9.202384
+Phase 2 - Epoch  29/50 │ Train Loss: 9.346525 │ Time: 2760.6s │ Val Loss: 9.188927 ★
+Phase 2 - Epoch  30/50 │ Train Loss: 9.341481 │ Time: 2756.9s │ Val Loss: 9.181504 ★
+Phase 2 - Epoch  31/50 │ Train Loss: 9.336961 │ Time: 2669.8s │ Val Loss: 9.215213
+Phase 2 - Epoch  32/50 │ Train Loss: 9.332873 │ Time: 2675.4s │ Val Loss: 9.173462 ★
+Device: cpu
+>>> Loading training data from directory: synthetic_data/physics
+Loading 360 simulation files from synthetic_data/physics...
+    Train samples: 648000  |  Batches/epoch: 20250
+    Split -> Train: 583200, Val: 64800
+>>> Model parameters: 4,079,907
+>>> Resuming from checkpoint: checkpoints/best.pth
+>>> Calculating baseline validation loss from the loaded checkpoint...
+/home/tar-tt128-gowtham/Downloads/seakeeping/train.py:307: UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  scheduler.step()
+>>> Baseline validation loss: 9.166122
+
+======================================================================
+  PHASE 2: FULL TRAINING (50 Epochs) | Unfreeze All
+======================================================================
+
+>>> Resuming Phase 2 from Epoch 33. Aligning LR scheduler...
+Phase 2 - Epoch  33/50 │ Train Loss: 9.328439 │ Time: 4015.3s │ Val Loss: 9.163145 ★
+Phase 2 - Epoch  34/50 │ Train Loss: 9.325796 │ Time: 2838.5s │ Val Loss: 9.164582
+Phase 2 - Epoch  35/50 │ Train Loss: 9.322070 │ Time: 2798.1s │ Val Loss: 9.157772 ★
+Phase 2 - Epoch  36/50 │ Train Loss: 9.318925 │ Time: 2661.6s │ Val Loss: 9.176345
+Phase 2 - Epoch  37/50 │ Train Loss: 9.315070 │ Time: 2857.0s │ Val Loss: 9.153941 ★
+Phase 2 - Epoch  38/50 │ Train Loss: 9.312898 │ Time: 2774.0s │ Val Loss: 9.147106 ★
+Phase 2 - Epoch  39/50 │ Train Loss: 9.309835 │ Time: 2741.1s │ Val Loss: 9.145002 ★
+Phase 2 - Epoch  40/50 │ Train Loss: 9.308403 │ Time: 2736.6s │ Val Loss: 9.143659 ★
+Phase 2 - Epoch  41/50 │ Train Loss: 9.305559 │ Time: 2750.3s │ Val Loss: 9.143696
+Phase 2 - Epoch  42/50 │ Train Loss: 9.303913 │ Time: 2751.5s │ Val Loss: 9.140041 ★
+Phase 2 - Epoch  43/50 │ Train Loss: 9.301699 │ Time: 2700.8s │ Val Loss: 9.139362 ★
+Phase 2 - Epoch  44/50 │ Train Loss: 9.302105 │ Time: 2664.6s │ Val Loss: 9.136516 ★
+Phase 2 - Epoch  45/50 │ Train Loss: 9.298783 │ Time: 2657.4s │ Val Loss: 9.134883 ★
+Phase 2 - Epoch  46/50 │ Train Loss: 9.297933 │ Time: 2654.8s │ Val Loss: 9.134882 ★
+Phase 2 - Epoch  47/50 │ Train Loss: 9.296840 │ Time: 2659.8s │ Val Loss: 9.133873 ★
+Phase 2 - Epoch  48/50 │ Train Loss: 9.296224 │ Time: 2704.4s │ Val Loss: 9.133639 ★
+Phase 2 - Epoch  49/50 │ Train Loss: 9.297577 │ Time: 2748.4s │ Val Loss: 9.132982 ★
+Phase 2 - Epoch  50/50 │ Train Loss: 9.295693 │ Time: 2742.3s │ Val Loss: 9.132956 ★
+
+======================================================================
+  PHASE 3: HARD-NEGATIVE MINING (5 Epochs) | Upweight Danger
+======================================================================
+Phase 3 - Epoch 1/5 │ Train Loss: 9.297966 │ Time: 2742.8s │ Val Loss: 9.137370
+Phase 3 - Epoch 2/5 │ Train Loss: 9.299444 │ Time: 2740.2s │ Val Loss: 9.142323
+Phase 3 - Epoch 3/5 │ Train Loss: 9.297322 │ Time: 2739.1s │ Val Loss: 9.132397 ★
+Phase 3 - Epoch 4/5 │ Train Loss: 9.296028 │ Time: 2745.5s │ Val Loss: 9.130559 ★
+Phase 3 - Epoch 5/5 │ Train Loss: 9.294998 │ Time: 2742.1s │ Val Loss: 9.130620
+>>> Final model saved → checkpoints/timesnet_seakeeping_final.pth
+>>> Best val loss: 9.130559  (saved → checkpoints/best.pth)
+>>> Training complete ✓
