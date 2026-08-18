@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from seakeeping_core.config import CFG
+
 # =========================================================================
 # 2. Model Architecture
 # =========================================================================
@@ -22,49 +25,50 @@ class InceptionBlock2D(nn.Module):
 
 class HybridTimesNet(nn.Module):
     """
-    3-Head Hybrid TimesNet with FiLM Conditioning.
+    Hybrid TimesNet with FiLM Conditioning — V2.0
 
-    The ship's static parameters (L, B, T, GM, etc.) generate gamma (scale)
-    and beta (shift) vectors via FiLM (Feature-wise Linear Modulation) that
-    modulate the temporal embeddings. This allows the model to learn universal
-    wave physics rules that are automatically tuned to any hull geometry.
+    The ship's static parameters generate gamma (scale) and beta (shift)
+    vectors via FiLM (Feature-wise Linear Modulation) that modulate the
+    temporal embeddings.
 
-    Inputs:
-        ts_x: (B, seq_len, 15) - Time Series
-            - Channels [0-8]: Periodic (6-DOF + wave_z, wind_speed, Hs)
-            - Channels [9-14]: Slow/Derived (speed, rudder, enc_angle, wind_rel_angle, res_ratio, wave_steepness)
-        stat_x: (B, 7) - Ship Static Params (L, B, T, Δ, Cb, KG, GM)
+    Inputs are strictly driven by `CFG`:
+        ts_x: (B, seq_len, len(PERIODIC_FEATURES) + len(SLOW_FEATURES))
+        stat_x: (B, len(STATIC_FEATURES))
     Outputs:
         pred_rolls: (B, pred_len)
         heading_scores: (B, 72)
-        risk_logits: (B, 3)
+        risk_logits: (B, len(RISK_CLASSES))
     """
     POOL_DIM: int = 128
 
-    def __init__(self, seq_len: int = 6000, pred_len: int = 600,
-                 d_model: int = 32):
+    def __init__(self, seq_len: int = CFG.seq_len, pred_len: int = CFG.pred_len,
+                 d_model: int = CFG.d_model):
         super().__init__()
         self.seq_len = seq_len
         self.pred_len = pred_len
         self.d_model = d_model
 
-        # --- Periodic Branch (9 channels) ---
-        self.periodic_proj = nn.Linear(9, d_model)
+        # Dynamic dimensions from CFG
+        num_periodic = len(CFG.periodic_features)
+        num_slow = len(CFG.slow_features)
+        num_static = len(CFG.static_features)
+        num_risks = len(CFG.risk_classes)
+
+        # --- Periodic Branch ---
+        self.periodic_proj = nn.Linear(num_periodic, d_model)
         self.inception = InceptionBlock2D(d_model, d_model)
         self.temporal_pool = nn.AdaptiveAvgPool1d(self.POOL_DIM)
 
-        # --- Slow / Derived Branch (6 channels) ---
+        # --- Slow / Derived Branch ---
         self.slow_proj = nn.Sequential(
-            nn.Linear(6, 32),
+            nn.Linear(num_slow, 32),
             nn.GELU(),
             nn.Linear(32, d_model)
         )
 
-        # --- FiLM Conditioning Branch (7 static channels → γ, β modulation) ---
-        # Generates scale (gamma) and shift (beta) for both periodic and slow branches
-        # Output: [gamma_periodic, beta_periodic, gamma_slow, beta_slow]
+        # --- FiLM Conditioning Branch ---
         self.film_generator = nn.Sequential(
-            nn.Linear(7, 64),
+            nn.Linear(num_static, 64),
             nn.GELU(),
             nn.Linear(64, 64),
             nn.GELU(),
@@ -95,14 +99,14 @@ class HybridTimesNet(nn.Module):
             nn.Linear(fused_dim, 256),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(256, 72),  # 72 bins = 360 degrees / 5
+            nn.Linear(256, CFG.heading_bins),  # 360° / 5° = 72 bins
         )
 
         self.risk_predictor = nn.Sequential(
             nn.Linear(fused_dim, 128),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(128, 3),  # [Sync, Parametric, Broach]
+            nn.Linear(128, num_risks),  # Dynamic output based on CFG
         )
 
     def _batch_global_dominant_period(self, x_periodic: torch.Tensor) -> int:
@@ -119,9 +123,10 @@ class HybridTimesNet(nn.Module):
     def forward(self, ts_x: torch.Tensor, stat_x: torch.Tensor):
         B = ts_x.shape[0]
 
-        # Split time-series channels
-        periodic_x = ts_x[:, :, :9]   # roll, pitch, yaw, heave, surge_vel, sway_vel, wave_z, wind_speed, Hs
-        slow_x = ts_x[:, :, 9:]       # speed, rudder, enc_angle, wind_rel_angle, res_ratio, wave_steepness
+        # Split time-series channels based on CFG dimensions
+        num_periodic = len(CFG.periodic_features)
+        periodic_x = ts_x[:, :, :num_periodic]
+        slow_x = ts_x[:, :, num_periodic:]
 
         # 0. Generate FiLM modulation from ship identity
         film_params = self.film_generator(stat_x)          # (B, 4 * d_model)
@@ -150,7 +155,7 @@ class HybridTimesNet(nn.Module):
         periodic_emb = ts_pooled.reshape(B, -1)                  # (B, d_model * POOL_DIM)
 
         # 2. Slow / Derived Processing
-        slow_mean = torch.mean(slow_x, dim=1)                    # Average state over the window (B, 6)
+        slow_mean = torch.mean(slow_x, dim=1)                    # Average state over window (B, n_slow)
         slow_emb = self.slow_proj(slow_mean)                     # (B, d_model)
 
         # FiLM modulation on slow features
@@ -168,11 +173,11 @@ class HybridTimesNet(nn.Module):
 
 
 class MultiTaskSeakeepingLoss(nn.Module):
-    def __init__(self, weight_risk: float = 5.0):
+    def __init__(self, weight_risk: float = 1.0):
         super().__init__()
         self.huber = nn.HuberLoss(delta=1.0)
         self.ce = nn.CrossEntropyLoss()
-        self.bce = nn.BCEWithLogitsLoss()
+        self.bce = nn.BCEWithLogitsLoss()   
         self.weight_risk = weight_risk
 
     def forward(self, 

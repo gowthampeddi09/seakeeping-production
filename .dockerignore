@@ -1,0 +1,15 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.db3
+*.bag
+validation_reports
+checkpoints_dryrun
+.gemini
+synthetic_data
+*.png
+*.pdf
+walkthrough.md

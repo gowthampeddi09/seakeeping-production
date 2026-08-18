@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Dataset Validation Report — Seakeeping AI</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0F172A; color: #F8FAFC; margin: 0; padding: 30px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #334155; padding-bottom: 20px; }
+        .verdict-box { background-color: #10B981; color: #FFFFFF; font-size: 24px; font-weight: bold; padding: 12px 24px; border-radius: 8px; }
+        .modules-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin: 25px 0; }
+        .module-card { background-color: #1E293B; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center; }
+        .pass-badge { background-color: #059669; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+        .fail-badge { background-color: #DC2626; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; margin: 20px 0; background-color: #1E293B; border-radius: 8px; overflow: hidden; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #334155; }
+        th { background-color: #334155; color: #94A3B8; text-transform: uppercase; font-size: 12px; letter-spacing: 1px; }
+        .failure-card { background-color: #450A0A; border-left: 4px solid #EF4444; padding: 15px; margin-bottom: 15px; border-radius: 4px; }
+        .failure-card h4 { margin: 0 0 8px 0; color: #FCA5A5; }
+        .failure-card p { margin: 0; color: #FECACA; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>Dataset Validation Framework</h1>
+                <p style="color: #94A3B8;">Seakeeping AI Production Pipeline Gate | Target Directory: <code>synthetic_data/v2.2_production_gold</code></p>
+            </div>
+            <div class="verdict-box">OVERALL: PASS</div>
+        </div>
+
+        <h2>Validation Modules Summary</h2>
+        <div class="modules-grid">
+            
+            <div class="module-card">
+                <h3>Module PHYSICS</h3>
+                <span class="pass-badge">PASS</span>
+            </div>
+            
+            <div class="module-card">
+                <h3>Module SCENARIOS</h3>
+                <span class="pass-badge">PASS</span>
+            </div>
+            
+            <div class="module-card">
+                <h3>Module STATISTICS</h3>
+                <span class="pass-badge">PASS</span>
+            </div>
+            
+            <div class="module-card">
+                <h3>Module TIMESERIES</h3>
+                <span class="pass-badge">PASS</span>
+            </div>
+            
+            <div class="module-card">
+                <h3>Module LABELS</h3>
+                <span class="pass-badge">PASS</span>
+            </div>
+            
+            <div class="module-card">
+                <h3>Module DIVERSITY</h3>
+                <span class="pass-badge">PASS</span>
+            </div>
+            
+            <div class="module-card">
+                <h3>Module SENSORS</h3>
+                <span class="pass-badge">PASS</span>
+            </div>
+            
+        </div>
+
+        <h2>Detailed Metrics & Acceptance Gate</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Metric</th>
+                    <th>Category</th>
+                    <th>Measured Value</th>
+                    <th>Acceptance Threshold</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                
+            <tr>
+                <td><b>GM Positive Ratio</b></td>
+                <td>Physics</td>
+                <td>420/420</td>
+                <td>100%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>NaN / Inf Free Files</b></td>
+                <td>Physics</td>
+                <td>420/420</td>
+                <td>100%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Speed Sanity Ratio</b></td>
+                <td>Physics</td>
+                <td>420/420</td>
+                <td>100%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Scenario Roll Response Compliance</b></td>
+                <td>Scenario</td>
+                <td>388/420</td>
+                <td>> 85%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Resonance Frequency Alignment</b></td>
+                <td>Scenario</td>
+                <td>371/420</td>
+                <td>> 80%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Dynamic Channel Variance Check</b></td>
+                <td>Statistical</td>
+                <td>Passed (0 frozen)</td>
+                <td>0 frozen channels</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Extreme Outliers (< 120° Roll)</b></td>
+                <td>Statistical</td>
+                <td>420/420</td>
+                <td>100%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Temporal Continuity Compliance</b></td>
+                <td>Time-Series</td>
+                <td>420/420</td>
+                <td>100%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Sensor Flatline Check</b></td>
+                <td>Time-Series</td>
+                <td>420/420</td>
+                <td>100%</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Class Balance: p_sync</b></td>
+                <td>Label</td>
+                <td>108 files > 0.50</td>
+                <td>>= 15 files</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Class Balance: p_param</b></td>
+                <td>Label</td>
+                <td>102 files > 0.50</td>
+                <td>>= 15 files</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Class Balance: p_broach</b></td>
+                <td>Label</td>
+                <td>66 files > 0.50</td>
+                <td>>= 15 files</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Class Balance: p_pure_loss</b></td>
+                <td>Label</td>
+                <td>59 files > 0.50</td>
+                <td>>= 15 files</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Class Balance: p_dead_ship</b></td>
+                <td>Label</td>
+                <td>30 files > 0.50</td>
+                <td>>= 15 files</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Vessel Class Diversity</b></td>
+                <td>Diversity</td>
+                <td>30 classes</td>
+                <td>>= 3 classes</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Sea State Height Coverage</b></td>
+                <td>Diversity</td>
+                <td>1.3m - 10.2m</td>
+                <td>Hs max >= 6.0m</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            <tr>
+                <td><b>Sensor Noise / Packet Loss Stress Test</b></td>
+                <td>Sensor</td>
+                <td>PASSED</td>
+                <td>Pass stress simulation</td>
+                <td><span class="pass-badge">PASS</span></td>
+            </tr>
+            
+            </tbody>
+        </table>
+
+        <h2>Failures & Recommended Fixes</h2>
+        <p style='color: #10B981; font-weight: bold;'>🎉 No failures detected! Dataset is fully compliant.</p>
+    </div>
+</body>
+</html>

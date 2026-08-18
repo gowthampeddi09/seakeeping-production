@@ -72,9 +72,10 @@ class ShipConfig:
 
     @property
     def roll_inertia(self) -> float:
-        """Total roll inertia including added mass (tonne·m²)."""
+        """Total roll inertia including added mass in kg·m²."""
         k_xx = 0.4 * self.beam  # radius of gyration
-        I_xx = self.displacement * k_xx ** 2
+        disp_kg = self.displacement * 1000.0  # convert tonnes to kg
+        I_xx = disp_kg * k_xx ** 2
         A_44 = 0.25 * I_xx  # added mass in roll
         return I_xx + A_44
 
@@ -413,7 +414,11 @@ class RollDynamicsSolver:
             rtol=1e-6, atol=1e-8
         )
 
-        return sol.t, sol.y[0], sol.y[1]
+        limit_roll = np.radians(60.0)
+        limit_rate = np.radians(40.0)
+        roll_rad = limit_roll * np.tanh(sol.y[0] / limit_roll)
+        roll_rate = limit_rate * np.tanh(sol.y[1] / limit_rate)
+        return sol.t, roll_rad, roll_rate
 
 
 # ===========================================================================
@@ -563,18 +568,17 @@ class FullMotionGenerator:
         wave_steepness = np.full(N, self.sea.Hs / wavelength)
 
         # ---- GROUND TRUTH RISK LABELS ----
-        p_sync, p_param, p_broach = self._compute_risk_labels(
+        p_sync, p_param, p_broach, p_pure_loss, p_dead_ship = self._compute_risk_labels(
             roll_deg, res_ratio, enc_angle, speed_kn, t
         )
 
-        # ---- ADD SENSOR NOISE (±5% domain randomization) ----
-        noise_factor = 0.05
-        roll_deg    *= (1 + self.rng.normal(0, noise_factor, N))
-        pitch       *= (1 + self.rng.normal(0, noise_factor, N))
-        heave       *= (1 + self.rng.normal(0, noise_factor, N))
-        surge_vel   *= (1 + self.rng.normal(0, noise_factor, N))
-        sway        *= (1 + self.rng.normal(0, noise_factor, N))
-        wave_z      *= (1 + self.rng.normal(0, noise_factor, N))
+        # ---- ADD REALISTIC SENSOR NOISE (Additive IMU & Navigation Noise) ----
+        roll_deg    += self.rng.normal(0.0, 0.10, N)   # ±0.10° IMU roll noise
+        pitch       += self.rng.normal(0.0, 0.05, N)   # ±0.05° IMU pitch noise
+        heave       += self.rng.normal(0.0, 0.02, N)   # ±0.02m heave sensor noise
+        surge_vel   += self.rng.normal(0.0, 0.05, N)   # ±0.05m/s log speed noise
+        sway        += self.rng.normal(0.0, 0.05, N)   # ±0.05m/s sway noise
+        wave_z      += self.rng.normal(0.0, 0.03, N)   # ±0.03m wave radar noise
 
         # ---- STATIC PARAMETERS (constant per simulation) ----
         ship_length = np.full(N, self.ship.length)
@@ -584,6 +588,7 @@ class FullMotionGenerator:
         block_coeff = np.full(N, self.ship.block_coeff)
         KG = np.full(N, self.ship.KG)
         GM_static = np.full(N, self.ship.GM)
+        engine_rpm = np.full(N, 0.0 if self.sea.scenario_type == "dead_ship" else self.sea.ship_speed_kn * 6.0)
 
         # ---- BUILD DATAFRAME ----
         df = pd.DataFrame({
@@ -596,16 +601,23 @@ class FullMotionGenerator:
             'wave_z': wave_z,
             'wind_speed': wind_speed,
             'Hs': Hs,
+            'Tp': np.full(N, self.sea.Tp),
             'speed': speed_kn,
+            'engine_rpm': engine_rpm,
             'rudder': rudder,
             'heading': heading,
             'wave_direction': wave_direction,
             'wind_direction': wind_direction,
+            'rpm_ratio': np.clip(speed_kn / 15.0, 0.0, 1.0),
+            'enc_angle': enc_angle,
+            'wind_rel_angle': wind_rel,
             'wave_steepness': wave_steepness,
             'res_ratio': res_ratio,
             'p_sync': p_sync,
             'p_param': p_param,
             'p_broach': p_broach,
+            'p_pure_loss': p_pure_loss,
+            'p_dead_ship': p_dead_ship,
             'ship_length': ship_length,
             'ship_beam': ship_beam,
             'ship_draft': ship_draft,
@@ -613,6 +625,11 @@ class FullMotionGenerator:
             'block_coeff': block_coeff,
             'KG': KG,
             'GM_static': GM_static,
+            'freeboard': np.full(N, self.ship.beam * 0.15),
+            'air_draft': np.full(N, self.ship.beam * 1.2),
+            'num_propellers': np.full(N, 1.0),
+            'ship_class': np.full(N, self.ship.name),
+            'scenario_type': np.full(N, self.sea.scenario_type),
         })
 
         return df
@@ -620,51 +637,67 @@ class FullMotionGenerator:
     def _compute_risk_labels(
         self, roll_deg: np.ndarray, res_ratio: np.ndarray,
         enc_angle: np.ndarray, speed_kn: np.ndarray, t: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Compute ground-truth risk probability labels.
-
-        These are continuous [0, 1] values based on:
-        - Actual roll magnitude (did danger happen?)
-        - Physics conditions (resonance ratio, encounter angle)
+        Compute continuous ground-truth risk probability labels for all 5 IMO failure modes.
+        Labels represent true physics vulnerability [0.0, 1.0].
         """
         N = len(roll_deg)
-        p_sync = np.zeros(N)
-        p_param = np.zeros(N)
-        p_broach = np.zeros(N)
-
-        abs_roll = np.abs(roll_deg)
         abs_enc = np.abs(enc_angle)
 
-        # --- Synchronous Roll ---
-        # Condition: R_res near 1.0 AND beam/quartering seas AND significant roll
-        sync_res_proximity = np.exp(-5.0 * (res_ratio - 1.0) ** 2)  # peaks at R=1.0
-        sync_angle_factor = np.where((abs_enc > 50) & (abs_enc < 130), 1.0, 0.2)
-        sync_roll_factor = np.clip(abs_roll / 10.0, 0, 1)  # scales with roll magnitude
-        p_sync = sync_res_proximity * sync_angle_factor * np.maximum(sync_roll_factor, 0.3 * sync_res_proximity)
+        # --- 1. Synchronous Roll ---
+        # Condition: R_res near 1.0 AND beam/quartering seas
+        sync_res_proximity = np.exp(-4.0 * (res_ratio - 1.0) ** 2)
+        sync_angle_factor = np.where((abs_enc > 45) & (abs_enc < 135), 1.0, 0.1)
+        p_sync = sync_res_proximity * sync_angle_factor
 
-        # --- Parametric Roll ---
-        # Condition: R_res near 2.0 AND head/following seas AND roll building
-        param_res_proximity = np.exp(-5.0 * (res_ratio - 2.0) ** 2)  # peaks at R=2.0
-        param_angle_factor = np.where((abs_enc > 150) | (abs_enc < 30), 1.0, 0.1)
-        param_roll_factor = np.clip(abs_roll / 8.0, 0, 1)
-        p_param = param_res_proximity * param_angle_factor * np.maximum(param_roll_factor, 0.2 * param_res_proximity)
+        # --- 2. Parametric Roll ---
+        # Condition: R_res near 2.0 AND head/following seas
+        param_res_proximity = np.exp(-4.0 * (res_ratio - 2.0) ** 2)
+        param_angle_factor = np.where((abs_enc > 135) | (abs_enc < 45), 1.0, 0.1)
+        p_param = param_res_proximity * param_angle_factor
 
-        # --- Broaching ---
-        # Condition: following seas AND speed ≈ wave celerity AND yaw diverging
+        # --- 3. Broaching / Surf-riding ---
+        # Condition: following seas AND V_ship ≈ V_wave AND severe waves (Hs >= 3.0m)
         V_wave = self.sea.wave_celerity
         speed_ms = speed_kn * 0.5144
         speed_ratio = speed_ms / (V_wave + 1e-6)
-        broach_speed_prox = np.exp(-10.0 * (speed_ratio - 1.0) ** 2)
-        broach_angle_factor = np.where(abs_enc < 45, 1.0, 0.1)
-        p_broach = broach_speed_prox * broach_angle_factor
+        broach_speed_prox = np.exp(-8.0 * (speed_ratio - 1.0) ** 2)
+        broach_angle_factor = np.where((abs_enc > 120) | (abs_enc < 60), 1.0, 0.1)
+        wave_severity_gate = np.clip((self.sea.Hs - 2.5) / 2.0, 0.0, 1.0)
+        p_broach = broach_speed_prox * broach_angle_factor * wave_severity_gate
 
-        # Clip all to [0, 1]
-        p_sync = np.clip(p_sync, 0, 1)
-        p_param = np.clip(p_param, 0, 1)
-        p_broach = np.clip(p_broach, 0, 1)
+        # --- 4. Pure Loss of Stability ---
+        # Condition: wavelength ≈ ship length AND steep waves AND head/following seas
+        wavelength = G * self.sea.Tp ** 2 / (2 * np.pi)
+        L_lambda = self.ship.length / (wavelength + 1e-6)
+        L_lambda_factor = np.exp(-6.0 * (L_lambda - 1.0) ** 2)
+        wave_steepness_val = self.sea.Hs / (wavelength + 1e-6)
+        steepness_factor = np.clip(wave_steepness_val / 0.035, 0.0, 1.0)
+        following_factor = np.where((abs_enc < 45) | (abs_enc > 135), 1.0, 0.1)
+        p_pure_loss = L_lambda_factor * steepness_factor * following_factor
 
-        return p_sync, p_param, p_broach
+        # --- 5. Dead Ship Condition ---
+        # Condition: engine stopped (RPM=0 or scenario='dead_ship'), beam/quartering seas, severe sea/wind
+        is_dead = 1.0 if self.sea.scenario_type == "dead_ship" else 0.0
+        beam_drift_factor = np.where((abs_enc > 50) & (abs_enc < 130), 1.0, 0.3)
+        severity = np.clip((self.sea.Hs / 4.0) * (self.sea.wind_speed / 15.0), 0.0, 1.0)
+        p_dead_ship = is_dead * beam_drift_factor * severity
+
+        if self.sea.scenario_type == "normal":
+            p_sync = np.minimum(p_sync, 0.15)
+            p_param = np.minimum(p_param, 0.15)
+            p_broach = np.minimum(p_broach, 0.15)
+            p_pure_loss = np.minimum(p_pure_loss, 0.15)
+            p_dead_ship = np.minimum(p_dead_ship, 0.15)
+
+        return (
+            np.clip(p_sync, 0.0, 1.0),
+            np.clip(p_param, 0.0, 1.0),
+            np.clip(p_broach, 0.0, 1.0),
+            np.clip(p_pure_loss, 0.0, 1.0),
+            np.clip(p_dead_ship, 0.0, 1.0),
+        )
 
 
 # ===========================================================================
@@ -772,7 +805,7 @@ def generate_targeted_sea_states(ship: ShipConfig) -> List[SeaState]:
         Tp_param = Tn / 2
 
     states.append(SeaState(
-        Hs=4.5, Tp=Tp_param, wave_dir=180.0,
+        Hs=4.5, Tp=Tp_param, wave_dir=0.0,
         wind_speed=15.0, wind_dir=175.0,
         ship_speed_kn=15.0, ship_heading=0.0,
         duration=900.0,
@@ -781,7 +814,7 @@ def generate_targeted_sea_states(ship: ShipConfig) -> List[SeaState]:
 
     # --- 7. Severe parametric roll (higher waves) ---
     states.append(SeaState(
-        Hs=7.0, Tp=Tp_param, wave_dir=180.0,
+        Hs=7.0, Tp=Tp_param, wave_dir=0.0,
         wind_speed=22.0, wind_dir=185.0,
         ship_speed_kn=18.0, ship_heading=0.0,
         duration=900.0,
@@ -790,7 +823,7 @@ def generate_targeted_sea_states(ship: ShipConfig) -> List[SeaState]:
 
     # --- 8. Parametric roll in following seas ---
     states.append(SeaState(
-        Hs=5.0, Tp=Tp_param * 1.1, wave_dir=0.0,
+        Hs=5.0, Tp=Tp_param * 1.1, wave_dir=180.0,
         wind_speed=18.0, wind_dir=5.0,
         ship_speed_kn=12.0, ship_heading=0.0,
         duration=900.0,
@@ -804,7 +837,7 @@ def generate_targeted_sea_states(ship: ShipConfig) -> List[SeaState]:
     Tp_broach = 2 * np.pi * V_broach / G
     Tp_broach = np.clip(Tp_broach, 5.0, 15.0)
     states.append(SeaState(
-        Hs=4.0, Tp=Tp_broach, wave_dir=0.0,
+        Hs=4.0, Tp=Tp_broach, wave_dir=180.0,
         wind_speed=12.0, wind_dir=350.0,
         ship_speed_kn=15.0, ship_heading=0.0,
         duration=900.0,
@@ -813,14 +846,34 @@ def generate_targeted_sea_states(ship: ShipConfig) -> List[SeaState]:
 
     # --- 10. Broaching in quartering seas ---
     states.append(SeaState(
-        Hs=5.0, Tp=Tp_broach * 1.2, wave_dir=315.0,
+        Hs=5.0, Tp=Tp_broach * 1.2, wave_dir=135.0,
         wind_speed=15.0, wind_dir=310.0,
         ship_speed_kn=15.0, ship_heading=0.0,
         duration=900.0,
         scenario_type="broaching"
     ))
 
-    # --- 11. Extreme storm (multiple risks) ---
+    # --- 11. Pure Loss of Stability (L ≈ λ, head/following steep waves) ---
+    Tp_pure_loss = np.sqrt(2 * np.pi * ship.length / G)
+    Tp_pure_loss = np.clip(Tp_pure_loss, 5.0, 20.0)
+    states.append(SeaState(
+        Hs=6.0, Tp=Tp_pure_loss, wave_dir=180.0,
+        wind_speed=20.0, wind_dir=175.0,
+        ship_speed_kn=12.0, ship_heading=0.0,
+        duration=900.0,
+        scenario_type="pure_loss"
+    ))
+
+    # --- 12. Dead Ship Condition (Engine failure, drifting beam-on in storm) ---
+    states.append(SeaState(
+        Hs=6.5, Tp=11.0, wave_dir=270.0,
+        wind_speed=24.0, wind_dir=265.0,
+        ship_speed_kn=2.0, ship_heading=0.0,  # drifting
+        duration=900.0,
+        scenario_type="dead_ship"
+    ))
+
+    # --- 13. Extreme storm (multiple risks) ---
     states.append(SeaState(
         Hs=10.0, Tp=14.0, wave_dir=225.0,
         wind_speed=30.0, wind_dir=220.0,
@@ -829,7 +882,7 @@ def generate_targeted_sea_states(ship: ShipConfig) -> List[SeaState]:
         scenario_type="extreme"
     ))
 
-    # --- 12. Light head seas (safe, for contrast) ---
+    # --- 14. Light head seas (safe, for contrast) ---
     states.append(SeaState(
         Hs=2.0, Tp=7.0, wave_dir=180.0,
         wind_speed=10.0, wind_dir=175.0,

@@ -1,0 +1,144 @@
+# vessels/sinar_pangkalansusu.yaml
+# Production Vessel Specification: SINAR PANGKALANSUSU (IMO 1043516)
+vessel:
+  name: "SINAR PANGKALANSUSU"
+  imo: "1043516"
+  static:
+    ship_length: 185.0
+    ship_beam: 31.0
+    ship_draft: 11.2
+    displacement: 42000.0
+    KG: 11.5
+    GM_static: 1.45
+    freeboard: 4.2
+    air_draft: 42.0
+    num_propellers: 1
+    avs: 58.0
+    full_ahead_rpm: 105.0
+    full_ahead_speed_kn: 15.5
+
+connection:
+  type: "udp"
+  ip: "0.0.0.0"
+  port: 10110 # UDP Broadcast port on Ship's Local Network Switch
+
+sensor_map:
+  heading:
+    sentences: ["HEHDT", "GPHDT", "AGHDT", "HCHDT"]
+    field_index: 1
+    unit: "degrees"
+    conversion: 1.0
+    range: [0.0, 360.0]
+    timeout_ms: 1000
+
+  speed:
+    sentences: ["VWVHW", "VDVBW", "GPVTG"]
+    field_index: 5
+    unit: "knots"
+    conversion: 1.0
+    range: [0.0, 30.0]
+    timeout_ms: 1000
+
+  wind_speed:
+    sentences: ["WIMWD", "WIMWV"]
+    field_index: 5
+    unit: "knots"
+    conversion: 0.5144
+    range: [0.0, 60.0]
+    timeout_ms: 2000
+
+  wind_direction:
+    sentences: ["WIMWD", "WIMWV"]
+    field_index: 1
+    unit: "degrees"
+    conversion: 1.0
+    range: [0.0, 360.0]
+    timeout_ms: 2000
+
+  engine_rpm:
+    sentences: ["VWRPM", "ERRPM"]
+    field_index: 3
+    unit: "rpm"
+    conversion: 1.0
+    range: [0.0, 200.0]
+    timeout_ms: 2000
+
+  rudder:
+    sentences: ["GPRSA", "AGRSA"]
+    field_index: 1
+    unit: "degrees"
+    conversion: 1.0
+    range: [-35.0, 35.0]
+    timeout_ms: 2000
+
+  yaw_rate:
+    sentences: ["GPROT", "HEROT"]
+    field_index: 1
+    unit: "deg_per_min"
+    conversion: 0.0166667
+    range: [-30.0, 30.0]
+    timeout_ms: 1000
+
+  roll:
+    sentences: ["PHTRO", "PSXN20", "PFEC"]
+    field_index: 1
+    unit: "degrees"
+    conversion: 1.0
+    range: [-60.0, 60.0]
+    timeout_ms: 500
+
+  pitch:
+    sentences: ["PHTRO", "PSXN20", "PFEC"]
+    field_index: 2
+    unit: "degrees"
+    conversion: 1.0
+    range: [-30.0, 30.0]
+    timeout_ms: 500
+
+  surge_vel:
+    sentences: ["PHTRO", "PSXN20"]
+    field_index: 3
+    unit: "m_per_s"
+    conversion: 1.0
+    range: [-10.0, 20.0]
+    timeout_ms: 500
+
+  sway_vel:
+    sentences: ["PHTRO", "PSXN20"]
+    field_index: 4
+    unit: "m_per_s"
+    conversion: 1.0
+    range: [-10.0, 10.0]
+    timeout_ms: 500
+
+  wave_z:
+    sentences: ["PWAV", "WMWAV"]
+    field_index: 1
+    unit: "meters"
+    conversion: 1.0
+    range: [-15.0, 15.0]
+    timeout_ms: 2000
+
+  Hs:
+    sentences: ["PWAV", "WMWAV"]
+    field_index: 2
+    unit: "meters"
+    conversion: 1.0
+    range: [0.0, 20.0]
+    timeout_ms: 5000
+
+  Tp:
+    sentences: ["PWAV", "WMWAV"]
+    field_index: 3
+    unit: "seconds"
+    conversion: 1.0
+    range: [2.0, 30.0]
+    timeout_ms: 5000
+
+  wave_direction:
+    sentences: ["PWAV", "WMWAV"]
+    field_index: 4
+    unit: "degrees"
+    conversion: 1.0
+    range: [0.0, 360.0]
+    timeout_ms: 5000

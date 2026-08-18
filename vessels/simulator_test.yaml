@@ -1,0 +1,133 @@
+# vessels/simulator_test.yaml
+# Mapping for Kave NMEA Simulator (/dev/pts/* or Serial/UDP)
+vessel:
+  name: "NMEA Simulator Test Vessel"
+  imo: "0000000"
+  static:
+    ship_length: 150.0
+    ship_beam: 25.0
+    ship_draft: 9.0
+    displacement: 18000.0
+    KG: 10.0
+    GM_static: 1.1
+    freeboard: 3.5
+    air_draft: 35.0
+    num_propellers: 1
+    avs: 55.0
+    full_ahead_rpm: 110.0
+    full_ahead_speed_kn: 18.0
+
+connection:
+  type: "serial" # "serial", "udp", or "file_replay"
+  port: "/dev/pts/6"
+  baud: 4800
+
+# Mapping NMEA 0183 sentences from simulator to Universal Vessel State
+sensor_map:
+  heading:
+    sentences: ["HCHDT", "HCHDM", "HCHDG", "GPHDT"]
+    field_index: 1
+    unit: "degrees"
+    conversion: 1.0
+    range: [0.0, 360.0]
+    timeout_ms: 2000
+
+  speed:
+    sentences: ["VWVHW", "GPVTG"]
+    field_index: 5 # STW in knots (VWVHW) / SOG in knots (GPVTG field 5)
+    unit: "knots"
+    conversion: 1.0
+    range: [0.0, 40.0]
+    timeout_ms: 2000
+
+  wind_speed:
+    sentences: ["WIMWD", "WIMWV"]
+    field_index: 5 # wind speed in knots in WIMWD
+    unit: "knots"
+    conversion: 0.5144 # knots -> m/s
+    range: [0.0, 60.0]
+    timeout_ms: 3000
+
+  wind_direction:
+    sentences: ["WIMWD", "WIMWV"]
+    field_index: 1 # True wind direction in degrees
+    unit: "degrees"
+    conversion: 1.0
+    range: [0.0, 360.0]
+    timeout_ms: 3000
+
+  engine_rpm:
+    sentences: ["VWRPM"]
+    field_index: 3 # RPM value
+    unit: "rpm"
+    conversion: 1.0
+    range: [0.0, 300.0]
+    timeout_ms: 3000
+
+  rudder:
+    sentences: ["GPRSA"]
+    field_index: 1 # Rudder angle star/port
+    unit: "degrees"
+    conversion: 1.0
+    range: [-45.0, 45.0]
+    timeout_ms: 3000
+
+  yaw_rate:
+    sentences: ["GPROT"]
+    field_index: 1 # Rate of turn (deg/min)
+    unit: "deg_per_min"
+    conversion: 0.0166667 # deg/min -> deg/s
+    range: [-30.0, 30.0]
+    timeout_ms: 3000
+
+  # Missing Motion & Wave Sensors (Simulated when not present in NMEA stream)
+  roll:
+    sentences: ["PHTRO", "PSXN20"]
+    field_index: 1
+    fallback: 0.0
+    synthetic_wave_sim: true # Generates realistic motion overlay if missing in stream
+    quality_when_missing: "SYNTHETIC"
+
+  pitch:
+    sentences: ["PHTRO", "PSXN20"]
+    field_index: 2
+    fallback: 0.0
+    synthetic_wave_sim: true
+    quality_when_missing: "SYNTHETIC"
+
+  surge_vel:
+    sentences: ["PHTRO"]
+    field_index: 3
+    fallback: 0.05
+    quality_when_missing: "ESTIMATED"
+
+  sway_vel:
+    sentences: ["PHTRO"]
+    field_index: 4
+    fallback: 0.0
+    quality_when_missing: "ESTIMATED"
+
+  wave_z:
+    sentences: ["PWAV"]
+    field_index: 1
+    fallback: 0.5
+    synthetic_wave_sim: true
+    quality_when_missing: "SYNTHETIC"
+
+  Hs:
+    sentences: ["PWAV"]
+    field_index: 2
+    fallback: 3.5
+    quality_when_missing: "ESTIMATED"
+
+  Tp:
+    sentences: ["PWAV"]
+    field_index: 3
+    fallback: 9.0
+    quality_when_missing: "ESTIMATED"
+
+  wave_direction:
+    sentences: ["PWAV"]
+    field_index: 4
+    fallback: 270.0
+    quality_when_missing: "ESTIMATED"

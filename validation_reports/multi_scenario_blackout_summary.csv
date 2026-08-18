@@ -1,0 +1,13 @@
+scenario_id,scenario_name,channel,blackout_duration_sec,start_ground_truth,end_ground_truth,mean_absolute_error_mae,max_error_deg,instant_recovery_error_deg,description
+Scenario_A_Steady_Course,Steady Course Hold (Low Motion),yaw,5.0,268.26,268.26,2.2627,3.934,0.041,Vessel steering flat course at ~268°
+Scenario_A_Steady_Course,Steady Course Hold (Low Motion),roll,5.0,0.0,0.0,0.0,0.0,0.0,Vessel steering flat course at ~268°
+Scenario_A_Steady_Course,Steady Course Hold (Low Motion),pitch,5.0,-0.0,-0.0,0.0,0.0,0.0,Vessel steering flat course at ~268°
+Scenario_B_Moderate_Turn,Moderate Heading Shift,yaw,5.0,280.26,248.26,45.2112,68.7276,0.2015,Vessel making moderate course adjustment 280° -> 248°
+Scenario_B_Moderate_Turn,Moderate Heading Shift,roll,5.0,-0.0,0.0,0.0001,0.0001,0.0,Vessel making moderate course adjustment 280° -> 248°
+Scenario_B_Moderate_Turn,Moderate Heading Shift,pitch,5.0,0.0,-0.0,0.0,0.0,0.0001,Vessel making moderate course adjustment 280° -> 248°
+Scenario_C_Sharp_Maneuver,High Rate of Turn (Sharp Maneuver),yaw,5.0,252.26,148.26,53.9984,100.0473,1.8009,Vessel executing sharp turn 252° -> 148°
+Scenario_C_Sharp_Maneuver,High Rate of Turn (Sharp Maneuver),roll,5.0,0.0,0.0,0.0,0.0,0.0,Vessel executing sharp turn 252° -> 148°
+Scenario_C_Sharp_Maneuver,High Rate of Turn (Sharp Maneuver),pitch,5.0,-0.0,-0.0,0.0,0.0,0.0,Vessel executing sharp turn 252° -> 148°
+Scenario_D_Extended_15s_Outage,Extended 15-Second Outage,yaw,15.0,268.26,264.26,54.137,122.9715,0.2009,Long sensor outage during complex maneuvering
+Scenario_D_Extended_15s_Outage,Extended 15-Second Outage,roll,15.0,0.0,0.0,0.0,0.0,0.0,Long sensor outage during complex maneuvering
+Scenario_D_Extended_15s_Outage,Extended 15-Second Outage,pitch,15.0,-0.0,-0.0,0.0002,0.0003,0.0,Long sensor outage during complex maneuvering

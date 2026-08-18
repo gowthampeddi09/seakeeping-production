@@ -1,0 +1,32 @@
+rosbag2_bagfile_information:
+  version: 5
+  storage_identifier: sqlite3
+  duration:
+    nanoseconds: 60000000000
+  starting_time:
+    nanoseconds_since_epoch: 1786343054457933620
+  message_count: 1778
+  topics_with_message_count:
+    - topic_metadata:
+        name: /imu/raw
+        type: sensor_msgs/msg/Imu
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 1200
+    - topic_metadata:
+        name: /gps/fix
+        type: sensor_msgs/msg/NavSatFix
+        serialization_format: cdr
+        offered_qos_profiles: ""
+      message_count: 578
+  compression_format: ""
+  compression_mode: ""
+  relative_file_paths:
+    - live_simulation_bag_0.db3
+  files:
+    - path: live_simulation_bag_0.db3
+      starting_time:
+        nanoseconds_since_epoch: 1786343054457933620
+      duration:
+        nanoseconds: 60000000000
+      message_count: 1778

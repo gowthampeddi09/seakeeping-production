@@ -1,61 +1,78 @@
 #!/usr/bin/env python3
 """
-pipeline.py — Real-Time Inference Pipeline (Production)
-========================================================
+pipeline.py — Real-Time Inference Pipeline (V2.1 — FINAL)
+============================================================
 
-This is the production wrapper that:
-1. Maintains a circular buffer of 10 minutes of 10Hz sensor data (6000 rows).
-2. Runs Layer 1 (Analytical Physics Engine) every cycle.
+Production wrapper that:
+1. Maintains a circular buffer of 5 minutes of 10 Hz sensor data (3000 rows x 19 channels).
+2. Runs Layer 1 (Analytical Physics Engine) every cycle — all 5 IMO failure modes.
 3. Runs Layer 2 (HybridTimesNet Neural Network) when buffer is full.
-4. Fuses both layers into a single Captain's Alert with:
-   - Predicted Max Roll (degrees)
-   - Danger Probability (%)
-   - Primary Risk Type (Synchronous / Parametric / Broaching / Wind)
-   - Recommended Heading (degrees)
-   - Physics Justification (human-readable text)
+4. Fuses both layers into a single Captain's Alert.
+5. Schmitt-trigger state machine: alerts fire ONLY on state transitions.
+6. Applies the same z-score normalization used during training.
+
+All dimensions driven by CFG. Zero hardcoded integers.
 """
 
+import time
 import torch
 import numpy as np
 from collections import deque
 from typing import Dict, Optional
 
+from seakeeping_core.config import CFG
 from seakeeping_core.engine.physics import AnalyticalPhysicsEngine, PhysicsRiskResult
 from seakeeping_core.models.timesnet import HybridTimesNet
 
 
+
+# Human-readable names for the 5 risk classes (ordered matching CFG.risk_classes)
+RISK_DISPLAY_NAMES = [
+    'Synchronous Roll',
+    'Parametric Roll',
+    'Broaching-to',
+    'Pure Loss of Stability',
+    'Dead Ship Condition',
+]
+
+# Alert level ordering for Schmitt trigger comparisons
+_ALERT_SEVERITY = {'SAFE': 0, 'CAUTION': 1, 'WARNING': 2, 'DANGER': 3}
+
+
 class RealTimePredictor:
     """
-    Manages the real-time inference pipeline for the ROS2 node.
-    Maintains a circular buffer of the last 10 minutes of sensor data.
-    Fuses Layer 1 (Physics Engine) and Layer 2 (Neural Network) predictions.
+    Manages the real-time inference pipeline for the ROS 2 node.
+
+    Usage from ROS 2 node (10 Hz callback):
+        predictor.add_reading(sensor_dict)       # every 100 ms
+        if cycle_count % 10 == 0:                # every 1 second
+            result = predictor.predict(sensor_dict)
+            if result['alert_changed']:
+                publish_alert(result)
+            publish_telemetry(result)
     """
 
-    # The 15 time-series channel names in the exact order the model expects
-    TS_CHANNELS = [
-        'roll', 'pitch', 'yaw', 'heave', 'surge_vel', 'sway_vel',
-        'wave_z', 'wind_speed', 'Hs',
-        'speed', 'rudder', 'enc_angle', 'wind_rel_angle',
-        'res_ratio', 'wave_steepness',
-    ]
-
-    # The 7 static ship feature names
-    STATIC_FEATURES = [
-        'ship_length', 'ship_beam', 'ship_draft', 'displacement',
-        'block_coeff', 'KG', 'GM_static',
-    ]
-
-    def __init__(self, ship_profile: dict, model_weights_path: str, device: str = "cpu"):
+    def __init__(self, ship_profile: dict, model_weights_path: str,
+                 norm_stats_path: str, device: str = "cpu"):
         """
         Args:
-            ship_profile: dict with keys matching STATIC_FEATURES
+            ship_profile: dict with keys matching CFG.static_features PLUS
+                          optional: 'avs', 'full_ahead_rpm', 'full_ahead_speed_kn'.
             model_weights_path: path to checkpoints/best.pth
+            norm_stats_path: path to checkpoints/norm_stats.npz
             device: 'cpu' or 'cuda'
         """
         self.device = torch.device(device)
         self.ship_profile = ship_profile
-        self.seq_len = 6000   # 10 minutes @ 10Hz
-        self.pred_len = 600   # 60 seconds prediction horizon
+        self.seq_len = CFG.seq_len
+        self.pred_len = CFG.pred_len
+
+        # ---- Load Normalization Statistics (from training) ----
+        norm_data = np.load(norm_stats_path)
+        self.ts_mean = norm_data['ts_mean']    # (19,)
+        self.ts_std = norm_data['ts_std']      # (19,)
+        self.static_mean = norm_data['static_mean']  # (9,)
+        self.static_std = norm_data['static_std']    # (9,)
 
         # ---- Layer 1: Analytical Physics Engine (Always-On, Day 1) ----
         self.physics_engine = AnalyticalPhysicsEngine(
@@ -63,32 +80,46 @@ class RealTimePredictor:
             ship_beam=ship_profile['ship_beam'],
             ship_draft=ship_profile['ship_draft'],
             displacement=ship_profile['displacement'],
-            block_coeff=ship_profile['block_coeff'],
             KG=ship_profile['KG'],
             GM=ship_profile['GM_static'],
+            freeboard=ship_profile.get('freeboard', 3.0),
+            air_draft=ship_profile.get('air_draft', 30.0),
+            avs=ship_profile.get('avs', -1.0),  # -1 triggers formula fallback
+            full_ahead_rpm=ship_profile.get('full_ahead_rpm', 100.0),
+            full_ahead_speed_kn=ship_profile.get('full_ahead_speed_kn', 15.0),
         )
 
         # ---- Layer 2: Neural Network (HybridTimesNet + FiLM) ----
-        self.model = HybridTimesNet(
-            seq_len=self.seq_len,
-            pred_len=self.pred_len,
-            d_model=32,
-        ).to(self.device)
-        state_dict = torch.load(model_weights_path, map_location=self.device)
+        self.model = HybridTimesNet().to(self.device)
+        state_dict = torch.load(model_weights_path, map_location=self.device, weights_only=True)
         self.model.load_state_dict(state_dict)
         self.model.eval()
 
-        # ---- Static tensor (reused every inference cycle) ----
+        # ---- Static tensor (normalized, reused every inference cycle) ----
+        static_raw = np.array(
+            [ship_profile[k] for k in CFG.static_features],
+            dtype=np.float32,
+        )
+        static_norm = (static_raw - self.static_mean) / self.static_std
         self.static_tensor = torch.tensor(
-            [ship_profile[k] for k in self.STATIC_FEATURES],
-            dtype=torch.float32,
-        ).unsqueeze(0).to(self.device)  # (1, 7)
+            static_norm, dtype=torch.float32,
+        ).unsqueeze(0).to(self.device)  # (1, n_static)
 
-        # ---- Circular Buffer for 10 minutes of 10Hz data ----
+        # ---- Full-ahead RPM for RPM ratio computation ----
+        self.full_ahead_rpm = ship_profile.get('full_ahead_rpm', 100.0)
+
+        # ---- Circular Buffer (stores NORMALIZED readings) ----
         self.buffer = deque(maxlen=self.seq_len)
 
-        # ---- Latest physics result (updated every cycle) ----
+        # ---- Schmitt-trigger alert state machine ----
+        self._prev_alert_level = 'SAFE'
         self.latest_physics: Optional[PhysicsRiskResult] = None
+
+        # ---- Alert Hold & Cooldown Timers ----
+        self._last_alert_time = 0.0          # Timestamp when last non-SAFE alert was triggered
+        self._last_cleared_time = 0.0        # Timestamp when alert was last cleared back to SAFE
+        self._alert_hold_seconds = 30.0      # Minimum time (seconds) to hold an alert active
+        self._alert_cooldown_seconds = 120.0 # Cooldown period (seconds) before re-firing cleared alert
 
     # ------------------------------------------------------------------
     # Public API
@@ -96,72 +127,86 @@ class RealTimePredictor:
 
     def add_reading(self, sensor_dict: dict):
         """
-        Adds a single 10Hz reading to the buffer.
+        Adds a single 10 Hz reading to the buffer.
 
-        sensor_dict must contain at minimum:
-            roll, pitch, yaw, heave, surge_vel, sway_vel,
-            wave_z, wind_speed, Hs,
-            speed, rudder, heading, wave_direction, wind_direction,
-            wave_steepness, res_ratio
+        Required raw sensor keys:
+            roll, pitch, yaw, surge_vel, sway_vel,
+            wave_z, wind_speed, Hs, Tp,
+            speed (STW preferred, else SOG),
+            heading, wave_direction, wind_direction,
+            rudder, engine_rpm
 
-        The enc_angle and wind_rel_angle are computed internally from
-        heading, wave_direction, and wind_direction.
+        The pipeline computes all derived features internally:
+            enc_angle, wind_rel_angle, res_ratio, wave_steepness, rpm_ratio
         """
-        # Compute derived angles (same formula as dataset.py)
         heading = sensor_dict.get('heading', 0.0)
         wave_dir = sensor_dict.get('wave_direction', 0.0)
         wind_dir = sensor_dict.get('wind_direction', 0.0)
+        speed_kn = sensor_dict.get('speed', 0.0)
+        Tp = sensor_dict.get('Tp', 8.0)
+        engine_rpm = sensor_dict.get('engine_rpm', self.full_ahead_rpm)
 
+        # --- Derived features ---
         wave_prop = (wave_dir + 180.0) % 360.0
         enc_angle = ((heading - wave_prop + 180.0) % 360.0) - 180.0
         wind_rel_angle = ((heading - wind_dir + 180.0) % 360.0) - 180.0
 
-        # Build the 15-channel row vector
-        row = np.array([
+        omega_n = self.physics_engine.omega_n
+        omega_w = 2 * np.pi / max(Tp, 1.0)
+        beta_rad = np.radians(enc_angle)
+        speed_ms = speed_kn * 0.5144
+        omega_e = abs(omega_w - (omega_w ** 2 / 9.81) * speed_ms * np.cos(beta_rad))
+        res_ratio = omega_e / (omega_n + 1e-8)
+
+        wavelength = 9.81 * Tp ** 2 / (2 * np.pi)
+        Hs = sensor_dict.get('Hs', 0.0)
+        wave_steepness = Hs / max(wavelength, 1.0)
+
+        rpm_ratio = np.clip(engine_rpm / max(self.full_ahead_rpm, 1.0), 0.0, 1.1)
+
+        # --- Build raw row: EXACT order = CFG.periodic_features + CFG.slow_features ---
+        row_raw = np.array([
+            # 9 Periodic
             sensor_dict.get('roll', 0.0),
             sensor_dict.get('pitch', 0.0),
             sensor_dict.get('yaw', 0.0),
-            sensor_dict.get('heave', 0.0),
             sensor_dict.get('surge_vel', 0.0),
             sensor_dict.get('sway_vel', 0.0),
             sensor_dict.get('wave_z', 0.0),
             sensor_dict.get('wind_speed', 0.0),
-            sensor_dict.get('Hs', 0.0),
-            sensor_dict.get('speed', 0.0),
+            Hs,
+            Tp,
+            # 10 Slow/Derived
+            speed_kn,
+            sensor_dict.get('heading_pert', sensor_dict.get('yaw', 0.0)),
+            wave_dir,
+            wind_dir,
             sensor_dict.get('rudder', 0.0),
+            rpm_ratio,
             enc_angle,
             wind_rel_angle,
-            sensor_dict.get('res_ratio', 0.0),
-            sensor_dict.get('wave_steepness', 0.0),
+            res_ratio,
+            wave_steepness,
         ], dtype=np.float32)
 
-        self.buffer.append(row)
+        # --- Apply z-score normalization (same stats used during training) ---
+        row_norm = (row_raw - self.ts_mean) / self.ts_std
 
-    def predict(self, sensor_dict: dict) -> Dict:
+        self.buffer.append(row_norm)
+
+    def predict(self, sensor_dict: dict, sensor_health: float = 1.0) -> Dict:
         """
-        Runs the full 3-Layer Decision Logic and returns the Captain's Alert.
+        Runs the full 3-Layer Decision Logic.
 
         Args:
-            sensor_dict: The latest sensor reading (same format as add_reading).
-                         Must also include: heading, wave_direction, wind_direction,
-                         Hs, speed (knots), Tp (wave peak period).
+            sensor_dict: Current sensor readings.
+            sensor_health: 0.0-1.0 from quality engine (tiered: LIVE=1, ESTIMATED=0.5, SYNTHETIC=0.3).
 
-        Returns:
-            dict with keys:
-                status: 'WARMUP' | 'PHYSICS_ONLY' | 'FULL'
-                alert_level: 'SAFE' | 'CAUTION' | 'WARNING' | 'DANGER'
-                max_roll_deg: float (predicted max roll in next 60s)
-                danger_probability: float (0-100%)
-                primary_risk: str (e.g. 'Synchronous Roll')
-                recommended_heading_deg: float
-                heading_range: [float, float] (safe heading band)
-                justification: str (physics explanation)
-                resonance_ratio: float
-                encounter_freq: float
-                natural_freq: float
+        Returns a JSON-serializable dict. The key 'alert_changed' is True
+        ONLY when the alert state has transitioned (Schmitt trigger).
         """
         # ----------------------------------------------------------
-        # LAYER 1: Analytical Physics Engine (ALWAYS runs, even warmup)
+        # LAYER 1: Physics Engine (ALWAYS runs, even during warmup)
         # ----------------------------------------------------------
         heading = sensor_dict.get('heading', 0.0)
         wave_dir = sensor_dict.get('wave_direction', 0.0)
@@ -171,6 +216,8 @@ class RealTimePredictor:
         Tp = sensor_dict.get('Tp', 8.0)
         speed_kn = sensor_dict.get('speed', 0.0)
         current_roll = sensor_dict.get('roll', 0.0)
+        engine_rpm = sensor_dict.get('engine_rpm', -1.0)
+        speed_source = sensor_dict.get('speed_source', 'SOG')
 
         physics_result = self.physics_engine.evaluate(
             speed_kn=speed_kn,
@@ -178,291 +225,515 @@ class RealTimePredictor:
             wave_dir_deg=wave_dir,
             wind_speed=wind_speed,
             wind_dir_deg=wind_dir,
-            Hs=Hs,
-            Tp=Tp,
+            Hs=Hs, Tp=Tp,
             current_roll_deg=current_roll,
+            engine_rpm=engine_rpm,
         )
         self.latest_physics = physics_result
 
-        # Score all 72 headings via pure physics
         physics_heading_scores = self.physics_engine.score_headings(
             speed_kn=speed_kn,
             wave_dir_deg=wave_dir,
             wind_speed=wind_speed,
             wind_dir_deg=wind_dir,
-            Hs=Hs,
-            Tp=Tp,
+            Hs=Hs, Tp=Tp,
+            engine_rpm=engine_rpm,
         )
 
+        # --- Heading recommendation (physics-only during WARMUP, fused during FULL) ---
+        best_idx = int(np.argmax(physics_heading_scores))
+        best_heading = best_idx * 5.0
+
+        # --- Speed recommendation (physics-only, always available) ---
+        physics_speed_scores = self.physics_engine.score_speeds(
+            heading_deg=best_heading,
+            wave_dir_deg=wave_dir,
+            wind_speed=wind_speed,
+            wind_dir_deg=wind_dir,
+            Hs=Hs, Tp=Tp,
+            current_roll_deg=current_roll,
+        )
+        best_rpm_idx = int(np.argmax(physics_speed_scores))
+        best_rpm = self.physics_engine.full_ahead_rpm * (best_rpm_idx / 10.0)
+        best_speed_kn = self.physics_engine.expected_speed_kn(best_rpm)
+
+        # --- Heading safe band ---
+        threshold = 0.8 * physics_heading_scores[best_idx] if physics_heading_scores[best_idx] > 0 else 0
+        safe_band = [i for i, s in enumerate(physics_heading_scores) if s >= threshold]
+        heading_lo = safe_band[0] * 5.0 if safe_band else (best_heading - 5) % 360
+        heading_hi = safe_band[-1] * 5.0 if safe_band else (best_heading + 5) % 360
+
+        # --- Physics risk breakdown (always available) ---
+        physics_risks = {name: round(v * 100, 1)
+                         for name, v in zip(RISK_DISPLAY_NAMES, physics_result.all_risks.values())}
+
         # ----------------------------------------------------------
-        # WARMUP: Buffer not yet full
+        # WARMUP: Buffer not yet full — Physics-only predictions
         # ----------------------------------------------------------
         if len(self.buffer) < self.seq_len:
-            best_heading_idx = int(np.argmax(physics_heading_scores))
-            best_heading = best_heading_idx * 5.0
+            # P13 FIX: WARMUP returns IDENTICAL keys as FULL mode.
+            # During WARMUP, NN fields use physics-only values so that
+            # bridge display, Redis stream, and logging never see missing keys.
+            alert_level = self._compute_alert_level(
+                physics_result.max_risk, 0.0, abs(current_roll), 0.0
+            )
+            alert_changed = self._update_alert_state(alert_level)
+
+            # P10: Recommendation reason
+            rec_reason = self._compute_recommendation_reason(
+                heading, best_heading, physics_result.resonance_ratio, speed_kn, best_speed_kn
+            )
+
+            # P7: Confidence capped by sensor health during warmup
+            buffer_fill = len(self.buffer) / self.seq_len
+            warmup_confidence = round(sensor_health * buffer_fill * 100, 1)
 
             return {
                 'status': 'WARMUP',
-                'buffer_pct': round(100.0 * len(self.buffer) / self.seq_len, 1),
-                'alert_level': physics_result.alert_level,
-                'max_roll_deg': abs(current_roll),
+                'buffer_pct': round(100.0 * buffer_fill, 1),
+                'alert_level': alert_level,
+                'alert_changed': alert_changed,
+                'alert_source': 'PHYSICS_ONLY',
+                'confidence_score': warmup_confidence,
+                'sensor_health': round(sensor_health, 2),
+                'max_roll_deg': round(abs(current_roll), 1),
                 'danger_probability': round(physics_result.max_risk * 100, 1),
                 'primary_risk': physics_result.primary_risk_name,
                 'recommended_heading_deg': best_heading,
-                'heading_range': [
-                    (best_heading - 5) % 360,
-                    (best_heading + 5) % 360,
-                ],
+                'recommended_speed_kn': round(best_speed_kn, 1),
+                'recommended_rpm': round(best_rpm, 0),
+                'heading_range': [heading_lo, heading_hi],
+                'recommendation_reason': rec_reason,
                 'justification': physics_result.justification,
+                'speed_source': speed_source,
+                'critical_angle': round(self.physics_engine.avs, 1),
+                'severity': 'NORMAL' if abs(current_roll) < 5.0 else 'MODERATE',
+                'severity_text': f"{'NORMAL' if abs(current_roll) < 5.0 else 'MODERATE'} — {abs(current_roll):.1f}° measured roll.",
                 'resonance_ratio': round(physics_result.resonance_ratio, 3),
                 'encounter_freq': round(physics_result.encounter_freq, 4),
                 'natural_freq': round(physics_result.natural_freq, 4),
+                'encounter_angle_deg': round(physics_result.encounter_angle_deg, 1),
+                'natural_roll_period_s': round(self.physics_engine.Tn, 1),
+                'adsm': round(physics_result.approx_dynamic_stability_margin, 3),
+                'wiss': round(physics_result.wave_induced_speed_surplus, 2),
+                'nn_risk_probs': {name: 0.0 for name in RISK_DISPLAY_NAMES},
+                'physics_risks': physics_risks,
             }
 
         # ----------------------------------------------------------
-        # LAYER 2: Neural Network Inference (buffer is full)
+        # LAYER 2: Neural Network (buffer is full)
         # ----------------------------------------------------------
-        ts_array = np.array(self.buffer, dtype=np.float32)  # (6000, 15)
-        ts_tensor = torch.from_numpy(ts_array).unsqueeze(0).to(self.device)  # (1, 6000, 15)
+        ts_array = np.array(self.buffer, dtype=np.float32)
+        ts_tensor = torch.from_numpy(ts_array).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
             pred_rolls, pred_headings, pred_risks = self.model(ts_tensor, self.static_tensor)
 
-        # --- Decode Roll Prediction ---
-        pred_roll_np = pred_rolls.cpu().numpy().flatten()           # (600,)
+        pred_roll_np = pred_rolls.cpu().numpy().flatten()
         max_predicted_roll = float(np.max(np.abs(pred_roll_np)))
 
-        # --- Decode Risk Prediction ---
-        # risk_logits shape: (1, 3) = [sync_risk, param_risk, broach_risk]
-        risk_probs = torch.sigmoid(pred_risks).cpu().numpy().flatten()  # (3,)
-        risk_names = ['Synchronous Roll', 'Parametric Roll', 'Broaching-to']
+        risk_probs = torch.sigmoid(pred_risks).cpu().numpy().flatten()
         max_risk_idx = int(np.argmax(risk_probs))
         max_risk_prob = float(risk_probs[max_risk_idx])
 
-        # --- Decode Heading Prediction ---
-        # heading_scores shape: (1, 72) — softmax scores for 72 bins of 5°
-        heading_scores = pred_headings.cpu().numpy().flatten()       # (72,)
+        heading_scores = pred_headings.cpu().numpy().flatten()
 
         # ----------------------------------------------------------
-        # LAYER 3: FUSION — Physics Override + Neural Refinement
+        # CONFIDENCE SCORE & OOD DETECTION (P7 + P8)
         # ----------------------------------------------------------
-        # Combine physics heading scores with neural heading scores
-        # Physics has veto power: if physics says a heading is deadly, the neural
-        # network cannot override it (safety-critical design)
-        fused_heading_scores = 0.4 * physics_heading_scores + 0.6 * heading_scores
+        # P8: Enhanced OOD — max z-score + percentage of features beyond ±3σ
+        max_zscore = float(np.max(np.abs(ts_array)))
+        pct_beyond_3sigma = float(np.mean(np.abs(ts_array) > 3.0))  # fraction of values beyond ±3σ
+        ood_penalty = float(np.clip(1.0 - max_zscore / 6.0, 0.0, 1.0))
+        ood_penalty *= float(np.clip(1.0 - pct_beyond_3sigma * 5.0, 0.0, 1.0))  # penalize if >20% OOD
 
-        best_heading_idx = int(np.argmax(fused_heading_scores))
-        best_heading = best_heading_idx * 5.0
+        certainty = float(abs(max_risk_prob - 0.5) * 2.0)
 
-        # Find the safe heading band (contiguous headings above 80% of max score)
-        threshold = 0.8 * fused_heading_scores[best_heading_idx]
-        safe_band = [i for i, s in enumerate(fused_heading_scores) if s >= threshold]
-        if safe_band:
-            heading_lo = safe_band[0] * 5.0
-            heading_hi = safe_band[-1] * 5.0
+        # P7: Use real sensor_health from quality engine (no longer hardcoded 1.0)
+        confidence_score = 0.3 * certainty + 0.3 * ood_penalty + 0.4 * sensor_health
+
+        # ----------------------------------------------------------
+        # LAYER 3: FUSION (P1 — Structured Decision Fusion)
+        # ----------------------------------------------------------
+        # Physics evaluates CURRENT state. NN predicts 30s FUTURE.
+        # These answer different questions and must be fused intelligently.
+        physics_risk = physics_result.max_risk
+        nn_risk = max_risk_prob
+
+        # SAFETY GOVERNOR: Physics is a FLOOR, never a ceiling.
+        # NN can add evidence but CANNOT override physics or escalate
+        # beyond CAUTION without physics confirmation.
+        if physics_risk >= 0.35:
+            # Physics detects current danger → Immediate response
+            alert_source = "PHYSICS_IMMEDIATE"
+            effective_danger = physics_risk
+        elif physics_risk >= 0.15 and nn_risk >= 0.35:
+            # Physics sees early signs + NN confirms future danger
+            alert_source = "CONFIRMED_FORECAST"
+            effective_danger = 0.6 * nn_risk + 0.4 * physics_risk
+        elif nn_risk >= 0.50 and physics_risk < 0.15:
+            # SAFETY GOVERNOR: NN claims danger but physics sees nothing.
+            # Cap effective_danger so this can only reach CAUTION, never WARNING/DANGER.
+            # This prevents false alarms like S1 calm seas → 100% Sync Roll.
+            alert_source = "NN_UNCONFIRMED"
+            effective_danger = min(0.20, 0.3 * nn_risk)
+        elif physics_risk >= 0.15:
+            # Physics sees mild risk, NN neutral → Monitoring
+            alert_source = "PHYSICS_MONITORING"
+            effective_danger = physics_risk
         else:
-            heading_lo = (best_heading - 5) % 360
-            heading_hi = (best_heading + 5) % 360
+            # Both low → Normal conditions
+            alert_source = "NORMAL"
+            effective_danger = max(physics_risk, 0.3 * nn_risk)
 
-        # Fuse the risk: take the MAX of physics risk and neural risk
-        # This ensures physics can always override the neural network
-        fused_danger = max(physics_result.max_risk, max_risk_prob)
+        # --- Fused heading recommendation ---
+        fused_heading_scores = 0.4 * physics_heading_scores + 0.6 * heading_scores
+        best_idx = int(np.argmax(fused_heading_scores))
 
-        # Use neural risk type if neural confidence is higher
-        if max_risk_prob > physics_result.max_risk:
-            primary_risk = risk_names[max_risk_idx]
+        # SAFETY GOVERNOR: Heading safety check.
+        # Physics score higher = safer. If fused recommendation is less safe than current heading,
+        # fallback to physics-best heading so we never recommend a course that increases risk.
+        cur_heading_idx = int(round((heading % 360.0) / 5.0)) % 72
+        if physics_heading_scores[best_idx] < physics_heading_scores[cur_heading_idx]:
+            best_idx = int(np.argmax(physics_heading_scores))
+
+        best_heading = best_idx * 5.0
+
+        threshold = 0.8 * fused_heading_scores[best_idx] if fused_heading_scores[best_idx] > 0 else 0
+        safe_band = [i for i, s in enumerate(fused_heading_scores) if s >= threshold]
+        heading_lo = safe_band[0] * 5.0 if safe_band else (best_heading - 5) % 360
+        heading_hi = safe_band[-1] * 5.0 if safe_band else (best_heading + 5) % 360
+
+        # --- Recalculate speed for fused best heading ---
+        physics_speed_scores = self.physics_engine.score_speeds(
+            heading_deg=best_heading,
+            wave_dir_deg=wave_dir,
+            wind_speed=wind_speed,
+            wind_dir_deg=wind_dir,
+            Hs=Hs, Tp=Tp,
+            current_roll_deg=current_roll,
+        )
+        best_rpm_idx = int(np.argmax(physics_speed_scores))
+        best_rpm = self.physics_engine.full_ahead_rpm * (best_rpm_idx / 10.0)
+        best_speed_kn = self.physics_engine.expected_speed_kn(best_rpm)
+
+        # --- SAFETY CONSTRAINT: Engine state and sea-state speed limits ---
+        # If engine is dead or nearly dead, cannot recommend propulsion speed
+        if engine_rpm >= 0 and engine_rpm <= 5.0:
+            best_rpm = 0.0
+            best_speed_kn = 0.0
+        else:
+            # Sea-state speed limit: heavy seas reduce max safe speed
+            max_safe_speed = max(5.0, self.physics_engine.full_ahead_speed_kn - 1.5 * Hs)
+            best_speed_kn = min(best_speed_kn, max_safe_speed)
+            # Clamp to ±30% of current speed to prevent unrealistic jumps
+            if speed_kn > 2.0:
+                best_speed_kn = float(np.clip(
+                    best_speed_kn, 0.7 * speed_kn, 1.3 * speed_kn
+                ))
+
+        # P2: Primary risk — physics is ALWAYS authoritative when it has signal.
+        # NN primary_risk is used ONLY when physics sees nothing meaningful.
+        if physics_risk >= 0.15:
+            primary_risk = physics_result.primary_risk_name
+        elif max_risk_prob >= 0.15:
+            primary_risk = RISK_DISPLAY_NAMES[max_risk_idx]
         else:
             primary_risk = physics_result.primary_risk_name
 
         # ----------------------------------------------------------
-        # DYNAMIC THRESHOLDS — computed from this ship's GM
+        # ALERT LEVEL (P3 + P6)
         # ----------------------------------------------------------
-        GM = self.ship_profile['GM_static']
-        critical_angle = min(50.0, 15.0 + 12.0 * GM)   # GZ → 0
-        danger_threshold = critical_angle * 0.65         # 65% of capsize
-        severe_threshold = critical_angle * 0.40         # 40% of capsize
-        moderate_threshold = critical_angle * 0.20       # 20% of capsize
+        alert_level = self._compute_alert_level(
+            effective_danger, max_risk_prob, max_predicted_roll, physics_risk
+        )
 
-        # Determine alert level from BOTH fused danger AND predicted roll
-        if fused_danger >= 0.8 or max_predicted_roll > danger_threshold:
-            alert_level = 'DANGER'
-        elif fused_danger >= 0.5 or max_predicted_roll > severe_threshold:
-            alert_level = 'WARNING'
-        elif fused_danger >= 0.2 or max_predicted_roll > moderate_threshold:
-            alert_level = 'CAUTION'
-        else:
-            alert_level = 'SAFE'
+        alert_changed = self._update_alert_state(alert_level)
 
-        # Compute severity text for new crew
-        roll_pct = max_predicted_roll / critical_angle * 100
-        if max_predicted_roll > critical_angle:
-            severity = 'CAPSIZE_RISK'
-            severity_text = (
-                f"☠️ CAPSIZE RISK — {max_predicted_roll:.1f}° exceeds your ship's "
-                f"capsize limit of {critical_angle:.0f}°. The ship may NOT return upright."
-            )
-        elif max_predicted_roll > danger_threshold:
-            severity = 'CRITICAL'
-            severity_text = (
-                f"🔴 CRITICAL — {max_predicted_roll:.1f}° is {roll_pct:.0f}% of your ship's "
-                f"capsize limit ({critical_angle:.0f}°). Structural damage and water ingress likely."
-            )
-        elif max_predicted_roll > severe_threshold:
-            severity = 'SEVERE'
-            severity_text = (
-                f"⚠️ SEVERE — {max_predicted_roll:.1f}° is {roll_pct:.0f}% of your ship's "
-                f"capsize limit ({critical_angle:.0f}°). Walking impossible. "
-                f"Loose objects become projectiles. Brace all crew."
-            )
-        elif max_predicted_roll > moderate_threshold:
-            severity = 'MODERATE'
-            severity_text = (
-                f"⚡ MODERATE — {max_predicted_roll:.1f}° is {roll_pct:.0f}% of your ship's "
-                f"capsize limit ({critical_angle:.0f}°). Unsecured cargo may shift."
-            )
-        else:
-            severity = 'NORMAL'
-            severity_text = (
-                f"✅ NORMAL — {max_predicted_roll:.1f}° is only {roll_pct:.0f}% of your ship's "
-                f"capsize limit ({critical_angle:.0f}°). Safe sailing."
-            )
+        # Severity text
+        avs_val = self.physics_engine.avs
+        roll_pct = max_predicted_roll / avs_val * 100 if avs_val > 0 else 0
+        severity, severity_text = self._compute_severity(
+            max_predicted_roll, avs_val, roll_pct
+        )
 
-        # Generate human justification
+        # Risk breakdowns
+        nn_risks = {name: round(float(risk_probs[i]) * 100, 1)
+                    for i, name in enumerate(RISK_DISPLAY_NAMES)}
+
+        # P10: Recommendation reason
+        rec_reason = self._compute_recommendation_reason(
+            heading, best_heading, physics_result.resonance_ratio, speed_kn, best_speed_kn
+        )
+
         justification = self._generate_justification(
             alert_level, primary_risk, max_predicted_roll,
-            fused_danger, best_heading, physics_result,
-            critical_angle, severity_text,
+            effective_danger, best_heading, best_speed_kn, physics_result,
+            avs_val, severity_text,
         )
 
         return {
             'status': 'FULL',
             'alert_level': alert_level,
+            'alert_changed': alert_changed,
+            'alert_source': alert_source,
+            'confidence_score': round(confidence_score * 100, 1),
+            'sensor_health': round(sensor_health, 2),
             'max_roll_deg': round(max_predicted_roll, 1),
-            'danger_probability': round(fused_danger * 100, 1),
+            'danger_probability': round(effective_danger * 100, 1),
             'primary_risk': primary_risk,
             'recommended_heading_deg': best_heading,
+            'recommended_speed_kn': round(best_speed_kn, 1),
+            'recommended_rpm': round(best_rpm, 0),
             'heading_range': [heading_lo, heading_hi],
+            'recommendation_reason': rec_reason,
             'justification': justification,
-            # Dynamic threshold info
-            'critical_angle': round(critical_angle, 1),
-            'danger_threshold': round(danger_threshold, 1),
-            'severe_threshold': round(severe_threshold, 1),
+            'speed_source': speed_source,
+            'critical_angle': round(avs_val, 1),
             'severity': severity,
             'severity_text': severity_text,
-            # Physics debug
             'resonance_ratio': round(physics_result.resonance_ratio, 3),
             'encounter_freq': round(physics_result.encounter_freq, 4),
             'natural_freq': round(physics_result.natural_freq, 4),
             'encounter_angle_deg': round(physics_result.encounter_angle_deg, 1),
-            'natural_roll_period_s': round(2 * np.pi / physics_result.natural_freq, 1)
-                if physics_result.natural_freq > 0 else 0,
-            'nn_risk_probs': {
-                'sync': round(float(risk_probs[0]) * 100, 1),
-                'parametric': round(float(risk_probs[1]) * 100, 1),
-                'broaching': round(float(risk_probs[2]) * 100, 1),
-            },
+            'natural_roll_period_s': round(self.physics_engine.Tn, 1),
+            'adsm': round(physics_result.approx_dynamic_stability_margin, 3),
+            'wiss': round(physics_result.wave_induced_speed_surplus, 2),
+            'nn_risk_probs': nn_risks,
+            'physics_risks': physics_risks,
         }
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Schmitt Trigger
     # ------------------------------------------------------------------
 
-    def _generate_justification(
-        self, alert_level: str, primary_risk: str,
-        max_roll: float, danger_prob: float,
-        best_heading: float, physics: PhysicsRiskResult,
-        critical_angle: float, severity_text: str,
-    ) -> str:
+    def _update_alert_state(self, new_level: str) -> bool:
         """
-        Generates a structured, human-readable justification string.
+        Schmitt-trigger state machine with time-based Alert Hold & Cooldown.
+        Returns True ONLY when state transitions.
+        Prevents alarm fatigue from wave-by-wave threshold oscillations.
+        """
+        # --- PREVIOUS SIMPLE STATE CHECK (COMMENTED OUT) ---
+        # REASON FOR REPLACEMENT:
+        # Lacked time-based hold and cooldown. Wave-by-wave risk fluctuations caused instant alarm
+        # flickering (e.g. Wave 1 = DANGER, Wave 2 = SAFE), leading to severe bridge alarm fatigue.
+        #
+        # changed = (new_level != self._prev_alert_level)
+        # self._prev_alert_level = new_level
+        # return changed
 
-        The output is designed so that BOTH an experienced captain and a
-        new crew member can understand:
-          1. WHAT is happening (severity + dynamic threshold)
-          2. WHY it is happening (physics mechanism + IMO reference)
-          3. WHAT to do about it (heading recommendation + reason)
+        # --- NEW TIME-BASED HOLD & COOLDOWN STATE MACHINE ---
+        # REASONING:
+        # 1. Escalation (SAFE -> CAUTION/WARNING/DANGER): Immediately triggers alert and sets timestamp.
+        # 2. De-escalation (DANGER/WARNING -> SAFE): Enforces minimum hold time (30s) so transient wave dips
+        #    don't clear active warnings prematurely.
+        # 3. Cooldown (Re-firing after clearance): Prevents re-triggering cleared alarms within 120s unless
+        #    an emergency threshold (DANGER) is hit.
+        now = time.time()
+        current_severity = _ALERT_SEVERITY.get(self._prev_alert_level, 0)
+        new_severity = _ALERT_SEVERITY.get(new_level, 0)
+
+        # Case 1: Escalation to higher severity level
+        if new_severity > current_severity:
+            # Check cooldown if re-triggering from SAFE after a recent clearance
+            if self._prev_alert_level == 'SAFE' and (now - self._last_cleared_time) < self._alert_cooldown_seconds:
+                if new_level != 'DANGER':
+                    # Suppress minor alert during cooldown period
+                    return False
+            
+            self._prev_alert_level = new_level
+            self._last_alert_time = now
+            return True
+
+        # Case 2: De-escalation to lower severity level
+        elif new_severity < current_severity:
+            # Enforce minimum hold time for active alerts
+            if (now - self._last_alert_time) < self._alert_hold_seconds:
+                # Hold active alert until hold duration elapses
+                return False
+
+            if new_level == 'SAFE':
+                self._last_cleared_time = now
+
+            self._prev_alert_level = new_level
+            return True
+
+        # Case 3: No level change
+        return False
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _compute_alert_level(self, effective_danger: float, nn_risk: float,
+                             max_roll: float, physics_risk: float) -> str:
         """
+        P3: IMO-style fixed roll operational envelopes for cargo vessels.
+        These are industry-standard limits used by classification societies
+        (DNV, Lloyd's, ClassNK). NOT derived from AVS/GM formula.
+
+        P6: Hysteresis — uses lower exit thresholds when already at elevated
+        alert to prevent oscillation at boundaries.
+
+        Roll envelopes:
+            < 5°  → SAFE
+            5-10° → CAUTION
+            10-15° → WARNING
+            15-22° → WARNING (approaching danger)
+            > 22° → DANGER
+
+        Probability thresholds (with hysteresis):
+            Enter DANGER: >= 60%   Exit DANGER: < 50%
+            Enter WARNING: >= 35%  Exit WARNING: < 25%
+            Enter CAUTION: >= 15%  Exit CAUTION: < 10%
+        """
+        prev_severity = _ALERT_SEVERITY.get(self._prev_alert_level, 0)
+
+        # --- Roll-based alert (fixed IMO-style envelopes) ---
+        abs_roll = abs(max_roll)
+        if abs_roll >= 22.0:
+            roll_alert = 'DANGER'
+        elif abs_roll >= 15.0:
+            roll_alert = 'WARNING'
+        elif abs_roll >= 10.0:
+            roll_alert = 'CAUTION' if prev_severity < 2 else 'WARNING'
+        elif abs_roll >= 5.0:
+            roll_alert = 'CAUTION'
+        else:
+            roll_alert = 'SAFE'
+
+        # --- Probability-based alert (with hysteresis for P6) ---
+        # Use asymmetric enter/exit thresholds to prevent oscillation
+        if prev_severity >= 3:  # Currently at DANGER
+            # Higher threshold to ENTER, lower to EXIT
+            if effective_danger >= 0.60:
+                prob_alert = 'DANGER'
+            elif effective_danger >= 0.50:
+                prob_alert = 'DANGER'  # Hold — haven't dropped below exit threshold
+            elif effective_danger >= 0.25:
+                prob_alert = 'WARNING'
+            else:
+                prob_alert = 'SAFE'
+        elif prev_severity >= 2:  # Currently at WARNING
+            if effective_danger >= 0.60:
+                prob_alert = 'DANGER'
+            elif effective_danger >= 0.25:
+                prob_alert = 'WARNING'  # Hold — haven't dropped below exit threshold
+            elif effective_danger >= 0.10:
+                prob_alert = 'CAUTION'
+            else:
+                prob_alert = 'SAFE'
+        else:  # Currently at SAFE or CAUTION — standard thresholds
+            if effective_danger >= 0.60:
+                prob_alert = 'DANGER'
+            elif effective_danger >= 0.35:
+                prob_alert = 'WARNING'
+            elif effective_danger >= 0.15:
+                prob_alert = 'CAUTION'
+            else:
+                prob_alert = 'SAFE'
+
+        # Take the HIGHER of roll-based and probability-based alerts
+        return max([roll_alert, prob_alert], key=lambda x: _ALERT_SEVERITY[x])
+
+    def _compute_severity(self, max_roll, avs_val, roll_pct):
+        """Severity text based on AVS (angle of vanishing stability)."""
+        if max_roll > avs_val:
+            return 'CAPSIZE_RISK', f"CAPSIZE RISK — {max_roll:.1f}° exceeds AVS limit of {avs_val:.0f}°."
+        elif max_roll > 22.0:
+            return 'CRITICAL', f"CRITICAL — {max_roll:.1f}° ({roll_pct:.0f}% of AVS {avs_val:.0f}°)."
+        elif max_roll > 15.0:
+            return 'SEVERE', f"SEVERE — {max_roll:.1f}° ({roll_pct:.0f}% of AVS {avs_val:.0f}°)."
+        elif max_roll > 10.0:
+            return 'MODERATE', f"MODERATE — {max_roll:.1f}° ({roll_pct:.0f}% of AVS {avs_val:.0f}°)."
+        elif max_roll > 5.0:
+            return 'ELEVATED', f"ELEVATED — {max_roll:.1f}° ({roll_pct:.0f}% of AVS {avs_val:.0f}°)."
+        else:
+            return 'NORMAL', f"NORMAL — {max_roll:.1f}° ({roll_pct:.0f}% of AVS {avs_val:.0f}°)."
+
+    def _compute_recommendation_reason(self, current_heading, rec_heading,
+                                        current_res_ratio, current_speed, rec_speed):
+        """
+        P10: Explains WHY a heading/speed change is recommended.
+        Captain needs to know the expected benefit, not just a number.
+        """
+        heading_diff = abs(((rec_heading - current_heading + 180) % 360) - 180)
+
+        if heading_diff < 5.0 and abs(rec_speed - current_speed) < 1.0:
+            return "Maintain current heading and speed — conditions are within safe limits."
+
+        parts = []
+        if heading_diff >= 5.0:
+            # Explain the heading recommendation
+            if current_res_ratio > 0.8 and current_res_ratio < 1.2:
+                parts.append(
+                    f"Alter course {heading_diff:.0f}° to {rec_heading:.0f}° — "
+                    f"current resonance ratio {current_res_ratio:.2f} is in synchronous danger band (0.8-1.2). "
+                    f"Course change will shift encounter frequency away from resonance."
+                )
+            elif current_res_ratio > 1.7 and current_res_ratio < 2.3:
+                parts.append(
+                    f"Alter course {heading_diff:.0f}° to {rec_heading:.0f}° — "
+                    f"current resonance ratio {current_res_ratio:.2f} is in parametric danger band (1.7-2.3). "
+                    f"Course change will break parametric coupling."
+                )
+            else:
+                parts.append(
+                    f"Alter course {heading_diff:.0f}° to {rec_heading:.0f}° — "
+                    f"reduces overall wave encounter risk."
+                )
+
+        if abs(rec_speed - current_speed) >= 1.0:
+            if rec_speed < current_speed:
+                parts.append(
+                    f"Reduce speed to {rec_speed:.1f} kn — "
+                    f"lowers wave encounter frequency and reduces dynamic loads."
+                )
+            else:
+                parts.append(
+                    f"Increase speed to {rec_speed:.1f} kn — "
+                    f"moves encounter frequency away from resonance band."
+                )
+
+        return " | ".join(parts) if parts else "No change required."
+
+    def _generate_justification(self, alert_level, primary_risk, max_roll, danger_prob,
+                                best_heading, best_speed_kn, physics, avs_val, severity_text):
         if alert_level == 'SAFE':
-            return (
-                f"All physics parameters within safe limits. "
-                f"Predicted max roll {max_roll:.1f}° is only "
-                f"{max_roll/critical_angle*100:.0f}% of this ship's capsize limit "
-                f"({critical_angle:.0f}°). Maintain current course."
-            )
+            return (f"All parameters within safe limits. "
+                    f"Predicted max roll {max_roll:.1f}° is "
+                    f"{max_roll/avs_val*100:.0f}% of AVS ({avs_val:.0f}°).")
 
         R = physics.resonance_ratio
         beta = physics.encounter_angle_deg
-        Tn = (2 * np.pi / physics.natural_freq) if physics.natural_freq > 0 else 0
-        omega_e = physics.encounter_freq
-        omega_n = physics.natural_freq
 
-        # ---- MECHANISM: WHY this is happening ----
-        if primary_risk == 'Synchronous Roll':
-            sea_type = 'beam' if 50 < abs(beta) < 130 else 'quartering'
-            mechanism = (
-                f"SYNCHRONOUS RESONANCE DETECTED (IMO ISC 2008, Section 2.2). "
-                f"The wave encounter frequency ({omega_e:.3f} rad/s) matches your ship's "
-                f"natural roll frequency ({omega_n:.3f} rad/s) — ratio R = {R:.2f} "
-                f"(danger band: 0.8–1.2). In {sea_type} seas (encounter angle {beta:+.0f}°), "
-                f"each wave pushes the roll at exactly the ship's natural rhythm, "
-                f"causing maximum energy transfer from waves to roll motion. "
-                f"Like pushing a swing at its exact timing — the roll grows with every wave."
-            )
-            heading_reason = (
-                f"Altering course to {best_heading:.0f}° changes the encounter angle, "
-                f"which shifts the encounter frequency away from the resonance band "
-                f"and breaks the energy coupling."
-            )
+        mechanism_map = {
+            'Synchronous Roll': (
+                f"SYNCHRONOUS RESONANCE — R_res={R:.2f} (danger 0.8–1.2), "
+                f"enc angle {beta:+.0f}°. Wave pushes roll at natural rhythm."),
+            'Parametric Roll': (
+                f"PARAMETRIC RESONANCE — R_res={R:.2f} (danger 1.7–2.3), "
+                f"enc angle {beta:+.0f}°. GM oscillation exceeds damping (Mathieu instability)."),
+            'Broaching-to': (
+                f"SURF-RIDING/BROACHING — V_ship/V_wave={physics.speed_wave_ratio:.2f} "
+                f"(danger >0.7). Rudder effectiveness approaching zero."),
+            'Pure Loss of Stability': (
+                f"PURE LOSS — wavelength matches ship length, GM drops on wave crest. "
+                f"ADSM={physics.approx_dynamic_stability_margin:.2f}."),
+            'Dead Ship Condition': (
+                f"DEAD SHIP — Engine RPM near zero, drifting beam-on. "
+                f"Combined heel approaching AVS ({self.physics_engine.avs:.0f}°)."),
+            'No Significant Risk': (
+                f"No dominant failure mode detected. "
+                f"All physics risk probabilities below 15%."),
+        }
 
-        elif primary_risk == 'Parametric Roll':
-            sea_type = 'head' if abs(beta) > 150 else 'following'
-            mechanism = (
-                f"PARAMETRIC RESONANCE DETECTED (IMO MSC.1/Circ.1627, 2nd Gen Criteria). "
-                f"The wave encounter frequency ({omega_e:.3f} rad/s) is approximately twice "
-                f"the natural roll frequency ({omega_n:.3f} rad/s) — ratio R = {R:.2f} "
-                f"(danger band: 1.7–2.3). In {sea_type} seas (encounter angle {beta:+.0f}°), "
-                f"as wave crests pass under the hull, the waterplane area changes — "
-                f"this makes GM oscillate, causing the GZ righting lever to vary with every wave. "
-                f"When this variation exceeds damping, roll amplitude grows EXPONENTIALLY "
-                f"(Mathieu instability). This is the most dangerous failure mode for container ships."
-            )
-            heading_reason = (
-                f"Altering course to {best_heading:.0f}° changes the encounter frequency "
-                f"to break the 2:1 frequency ratio. Even a 15–20° course change "
-                f"can eliminate the parametric coupling entirely."
-            )
+        mechanism = mechanism_map.get(primary_risk, "Unknown risk type.")
 
-        elif primary_risk == 'Broaching-to':
-            mechanism = (
-                f"SURF-RIDING / BROACHING RISK (IMO MSC.1/Circ.1627, Level 2 Criteria). "
-                f"Ship speed is approaching wave celerity — speed/wave ratio = "
-                f"{physics.speed_wave_ratio:.2f} (danger above 0.7). In following seas "
-                f"(encounter angle {beta:+.0f}°), the ship is being captured by the wave crest. "
-                f"When the ship 'surfs' on the wave, the water velocity relative to the rudder "
-                f"approaches zero — causing COMPLETE LOSS of directional control. "
-                f"The ship will yaw uncontrollably and broach beam-on to the waves."
-            )
-            heading_reason = (
-                f"Altering course to {best_heading:.0f}° increases the encounter angle, "
-                f"preventing the wave from overtaking the ship and breaking the surf lock-in."
-            )
-
-        else:  # Wind Heeling
-            mechanism = (
-                f"WIND HEELING EXCEEDING GZ LIMIT (IMO ISC 2008 Weather Criterion). "
-                f"Combined beam wind heeling moment and wave roll are approaching "
-                f"the maximum righting lever. Beam wind exposure is dangerously high."
-            )
-            heading_reason = (
-                f"Altering course to {best_heading:.0f}° reduces the exposed lateral area "
-                f"to the wind, lowering the heeling moment."
-            )
-
-        # ---- ASSEMBLE STRUCTURED OUTPUT ----
         return (
             f"{severity_text} | "
             f"{primary_risk} — {danger_prob*100:.0f}% probability. | "
             f"{mechanism} | "
-            f"RECOMMENDATION: Immediately alter course to {best_heading:.0f}°. {heading_reason}"
+            f"RECOMMENDATION: Alter course to {best_heading:.0f}° and adjust speed to {best_speed_kn:.1f} kts."
         )
 

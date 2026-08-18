@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  maritime_ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: seakeeping-ingestion:v5.1
+    container_name: seakeeping_ingestion_bus
+    restart: always
+    network_mode: "host"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - VESSEL_CONFIG=/app/vessels/sol_progress.yaml
+    volumes:
+      # Mount vessel profile config for easy updates without rebuilding container
+      - ./vessels/sol_progress.yaml:/app/vessels/sol_progress.yaml:ro
+    command: ["--config", "vessels/sol_progress.yaml", "--udp-port", "10110"]
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import seakeeping_core' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

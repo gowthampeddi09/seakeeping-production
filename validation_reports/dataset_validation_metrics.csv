@@ -1,0 +1,18 @@
+metric,category,value,threshold,status
+GM Positive Ratio,Physics,420/420,100%,PASS
+NaN / Inf Free Files,Physics,420/420,100%,PASS
+Speed Sanity Ratio,Physics,420/420,100%,PASS
+Scenario Roll Response Compliance,Scenario,388/420,> 85%,PASS
+Resonance Frequency Alignment,Scenario,371/420,> 80%,PASS
+Dynamic Channel Variance Check,Statistical,Passed (0 frozen),0 frozen channels,PASS
+Extreme Outliers (< 120° Roll),Statistical,420/420,100%,PASS
+Temporal Continuity Compliance,Time-Series,420/420,100%,PASS
+Sensor Flatline Check,Time-Series,420/420,100%,PASS
+Class Balance: p_sync,Label,108 files > 0.50,>= 15 files,PASS
+Class Balance: p_param,Label,102 files > 0.50,>= 15 files,PASS
+Class Balance: p_broach,Label,66 files > 0.50,>= 15 files,PASS
+Class Balance: p_pure_loss,Label,59 files > 0.50,>= 15 files,PASS
+Class Balance: p_dead_ship,Label,30 files > 0.50,>= 15 files,PASS
+Vessel Class Diversity,Diversity,30 classes,>= 3 classes,PASS
+Sea State Height Coverage,Diversity,1.3m - 10.2m,Hs max >= 6.0m,PASS
+Sensor Noise / Packet Loss Stress Test,Sensor,PASSED,Pass stress simulation,PASS
