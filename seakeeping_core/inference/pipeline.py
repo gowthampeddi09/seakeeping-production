@@ -395,7 +395,8 @@ class RealTimePredictor:
         # fallback to physics-best heading so we never recommend a course that increases risk.
         cur_heading_idx = int(round((heading % 360.0) / 5.0)) % 72
         if physics_heading_scores[best_idx] < physics_heading_scores[cur_heading_idx]:
-            best_idx = int(np.argmax(physics_heading_scores))
+            best_idx = int(np.argmax
+            (physics_heading_scores))
 
         best_heading = best_idx * 5.0
 

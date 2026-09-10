@@ -295,7 +295,7 @@ def run_scenario(predictor, name, scenario_def):
     # Reset predictor buffer
     predictor.buffer.clear()
     predictor._prev_alert_level = 'SAFE'
-
+    
     # Feed 3000 readings to fill buffer
     for reading in readings[:3000]:
         predictor.add_reading(reading)
@@ -362,16 +362,16 @@ def main():
     norm_path = Path("checkpoints/norm_stats.npz")
 
     if not weights_path.exists():
-        print(f"❌ Model weights not found at: {weights_path}")
+        print(f"[FAIL] Model weights not found at: {weights_path}")
         sys.exit(1)
     if not norm_path.exists():
-        print(f"❌ Norm stats not found at: {norm_path}")
+        print(f"[FAIL] Norm stats not found at: {norm_path}")
         sys.exit(1)
 
-    print(f"✅ Model:      {weights_path}")
-    print(f"✅ Norm Stats:  {norm_path}")
-    print(f"ℹ️  Ship:       150m Container (GM={SHIP_PROFILE['GM_static']}m)")
-    print(f"ℹ️  Tn:         {TN:.1f}s (ω_n = {OMEGA_N:.4f} rad/s)")
+    print(f"[OK] Model:      {weights_path}")
+    print(f"[OK] Norm Stats: {norm_path}")
+    print(f"[INFO] Ship:     150m Container (GM={SHIP_PROFILE['GM_static']}m)")
+    print(f"[INFO] Tn:       {TN:.1f}s (omega_n = {OMEGA_N:.4f} rad/s)")
 
     # Initialize predictor
     predictor = RealTimePredictor(
@@ -380,7 +380,7 @@ def main():
         norm_stats_path=str(norm_path),
         device="cpu"
     )
-    print("✅ Predictor loaded.\n")
+    print("[OK] Predictor loaded successfully.\n")
 
     # Run all scenarios
     scenarios = define_scenarios()
@@ -390,45 +390,46 @@ def main():
         result = run_scenario(predictor, name, scenario_def)
         results.append(result)
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # SUMMARY TABLE
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     print("\n\n" + "=" * 120)
     print("  SUMMARY TABLE")
     print("=" * 120)
     print(f"  {'Scenario':<25s} {'Expected':<22s} {'Alert':<10s} {'MaxRoll':>8s} "
           f"{'NN Max%':>8s} {'NN Risk':>22s} {'Phys%':>8s} {'Phys Risk':>22s} {'Conf%':>6s}")
-    print("  " + "─" * 116)
+    print("  " + "-" * 116)
 
     nn_all_zero = True
     for r in results:
         if r['nn_max_risk'] > 0.5:
             nn_all_zero = False
         print(f"  {r['name']:<25s} {r['expected']:<22s} {r['alert_level']:<10s} "
-              f"{r['max_roll']:>7.1f}° {r['nn_max_risk']:>7.1f}% {r['nn_max_name']:>22s} "
+              f"{r['max_roll']:>7.1f} deg {r['nn_max_risk']:>7.1f}% {r['nn_max_name']:>22s} "
               f"{r['phys_max_risk']:>7.1f}% {r['phys_max_name']:>22s} {r['confidence']:>5.1f}%")
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # DIAGNOSIS
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     print("\n\n" + "=" * 70)
     print("  DIAGNOSIS")
     print("=" * 70)
 
     # Check 1: NN Risk Head
     if nn_all_zero:
-        print("\n  🔴 NN RISK HEAD: ALL probabilities ≤ 0.5% across ALL scenarios.")
-        print("     The risk classification head has collapsed.")
-        print("     → Action: Retrain with focal loss or class rebalancing.")
+        print("\n  [ALERT] NN RISK HEAD: ALL probabilities <= 0.5% across ALL scenarios.")
+        print("          The risk classification head has collapsed.")
+        print("          Action: Retrain with focal loss or class rebalancing.")
     else:
         danger_scenarios = [r for r in results if 'Roll' in r['expected'] or
                             'Broach' in r['expected'] or 'Loss' in r['expected'] or
                             'Dead' in r['expected']]
         nn_detected = [r for r in danger_scenarios if r['nn_max_risk'] > 10.0]
-        print(f"\n  {'✅' if len(nn_detected) >= 3 else '🟡'} NN RISK HEAD: "
+        status_tag = '[PASS]' if len(nn_detected) >= 3 else '[WARN]'
+        print(f"\n  {status_tag} NN RISK HEAD: "
               f"Detected {len(nn_detected)}/{len(danger_scenarios)} danger scenarios (>10% prob).")
         for r in danger_scenarios:
-            status = '✅' if r['nn_max_risk'] > 10.0 else '❌'
+            status = '[PASS]' if r['nn_max_risk'] > 10.0 else '[FAIL]'
             print(f"     {status} {r['name']}: NN says {r['nn_max_name']} at {r['nn_max_risk']:.1f}%")
 
     # Check 2: Roll Prediction Head
@@ -440,25 +441,26 @@ def main():
 
     if safe_rolls and danger_rolls:
         if max(safe_rolls) < min(danger_rolls):
-            print(f"\n  ✅ ROLL PREDICTION: Safe scenarios ({max(safe_rolls):.1f}°) < "
-                  f"Danger scenarios ({min(danger_rolls):.1f}°). Differentiation OK.")
+            print(f"\n  [PASS] ROLL PREDICTION: Safe scenarios ({max(safe_rolls):.1f} deg) < "
+                  f"Danger scenarios ({min(danger_rolls):.1f} deg). Differentiation OK.")
         else:
-            print(f"\n  🟡 ROLL PREDICTION: Safe max={max(safe_rolls):.1f}°, "
-                  f"Danger min={min(danger_rolls):.1f}°. Overlap detected.")
+            print(f"\n  [WARN] ROLL PREDICTION: Safe max={max(safe_rolls):.1f} deg, "
+                  f"Danger min={min(danger_rolls):.1f} deg. Overlap detected.")
 
     # Check 3: Heading Scorer
     rec_headings = [r['rec_heading'] for r in results if r['rec_heading'] != 'N/A']
     if len(set(rec_headings)) <= 2:
-        print(f"\n  🔴 HEADING SCORER: Only {len(set(rec_headings))} unique headings recommended.")
-        print("     The heading scorer may have collapsed (always recommending the same heading).")
+        print(f"\n  [ALERT] HEADING SCORER: Only {len(set(rec_headings))} unique headings recommended.")
+        print("          The heading scorer may have collapsed (always recommending the same heading).")
     else:
-        print(f"\n  ✅ HEADING SCORER: {len(set(rec_headings))} different headings recommended "
+        print(f"\n  [PASS] HEADING SCORER: {len(set(rec_headings))} different headings recommended "
               f"across scenarios. Scorer is differentiating.")
 
     # Check 4: Physics Engine Sanity
     phys_check = all(r['phys_max_risk'] > 0 for r in results
                      if 'Calm' not in r['name'])
-    print(f"\n  {'✅' if phys_check else '🔴'} PHYSICS ENGINE: "
+    status_tag = '[PASS]' if phys_check else '[ALERT]'
+    print(f"\n  {status_tag} PHYSICS ENGINE: "
           f"{'Detecting risks in danger scenarios.' if phys_check else 'Some danger scenarios have 0% physics risk.'}")
 
     # Final verdict
@@ -470,10 +472,13 @@ def main():
     else:
         all_pass = (not nn_all_zero and len(set(rec_headings)) > 2)
         if all_pass:
-            print("  VERDICT: ✅ All heads are functional. Model is ready for deployment testing.")
+            print("  VERDICT: [PASS] All heads are functional. Model is ready for deployment testing.")
         else:
-            print("  VERDICT: 🟡 Partial functionality. Review the flagged issues above.")
+            print("  VERDICT: [WARN] Partial functionality. Review the flagged issues above.")
     print("=" * 70)
+
+
+    
 
 
 if __name__ == "__main__":

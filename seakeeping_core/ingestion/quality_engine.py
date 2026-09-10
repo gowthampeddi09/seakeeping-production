@@ -199,7 +199,7 @@ class QualityEngine:
         if is_duplicate:
             return state.last_val, state.quality, state.confidence
 
-        if 0.0 < dt < 0.005:  # Duplicate packet (< 200 Hz)
+        if 0.0 < dt < 0.005 and abs(value - prev_val) < 1e-6:  # Duplicate packet (< 200 Hz) with identical value
             state.duplicate_count += 1
             return state.last_val, state.quality, state.confidence
 
@@ -212,7 +212,7 @@ class QualityEngine:
             is_phantom = True
         # Zero is a phantom ONLY for fields where 0.0 is physically impossible
         elif value == 0.0 and field in {'depth', 'water_depth', 'Hs', 'wave_height',
-                                         'Tp', 'wave_period', 'wind_speed', 'engine_rpm'}:
+                                         'Tp', 'wave_period'}:
             state.phantom_count += 1
             is_phantom = True
         else:
@@ -268,7 +268,7 @@ class QualityEngine:
         # CHECK 2: Slew Rate Spike Detection & Smoothing
         # ----------------------------------------------------------
         is_spike = False
-        if not is_first_reading and dt > 0.0 and prev_time > 0.0:
+        if not is_first_reading and dt >= 0.05 and prev_time > 0.0:
             if field in ANGULAR_FIELDS:
                 diff = abs(value - prev_val)
                 diff = min(diff, 360.0 - diff)  # Circular wrap-around

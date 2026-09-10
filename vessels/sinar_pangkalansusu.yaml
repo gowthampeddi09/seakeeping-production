@@ -1,21 +1,53 @@
 # vessels/sinar_pangkalansusu.yaml
-# Production Vessel Specification: SINAR PANGKALANSUSU (IMO 1043516)
+# Production Vessel Specification: SINAR PANGKALANSUSU (IMO 1043516, Built: 2024)
+# Shipyard: Ningbo Xinle Shipbuilding Co., Ltd., China
+# Operator: PT Samudera Indonesia (Indonesian Flag)
 vessel:
   name: "SINAR PANGKALANSUSU"
   imo: "1043516"
+  flag: "Indonesia"
+  vessel_type: "Container Feeder (approx 700 TEU)"
   static:
-    ship_length: 185.0
-    ship_beam: 31.0
-    ship_draft: 11.2
-    displacement: 42000.0
-    KG: 11.5
-    GM_static: 1.45
-    freeboard: 4.2
-    air_draft: 42.0
+    # Principal Particulars & Hydrostatics (Ningbo Xinle / Samudera Indonesia Verified)
+    ship_length: 128.00      # Length Overall (LOA) [m]
+    loa: 128.00              # Length Overall (LOA) [m]
+    lpp: 119.50              # Length Between Perpendiculars (LBP) [m]
+    ship_beam: 22.00         # Moulded Breadth (Beam) [m]
+    beam: 22.00              # Beam [m]
+    depth_moulded: 9.00      # Moulded Depth [m]
+    ship_draft: 5.50         # Design Operating Draught [m]
+    draft_summer: 7.20       # Scantling / Summer Load Draught [m]
+    draft_design: 5.50       # Design Draught [m]
+    draft_mean: 5.50         # Operating Mean Draught [m]
+    draft_fwd: 5.40          # Forward Draught [m]
+    draft_aft: 5.60          # Aft Draught [m]
+    displacement: 13600.0    # Full load displacement [tonnes] (DWT 10,162 t + Lightship 3,438 t)
+    dwt: 10162.0             # Deadweight [tonnes]
+    gross_tonnage: 7500.0    # Gross Tonnage [GT]
+    lightship: 3438.0        # Lightship [tonnes]
+    block_coefficient: 0.708 # Block coefficient Cb at design draft
+    cb: 0.708
+    KG: 7.20                 # Height of CG above keel [m]
+    KM: 8.45                 # Transverse metacentre height above keel [m]
+    GM_static: 1.25          # Static metacentric height [m]
+    lcg: 0.30                # Longitudinal position of CG fwd of midships [m]
+    freeboard: 3.50          # Operating freeboard [m] (Depth 9.0m - Draft 5.5m)
+    air_draft: 36.00         # Air draft [m]
+    water_density: 1025.0    # Seawater density [kg/m³]
+
+    # Propulsion & Maneuvering Particulars
+    main_engine: "Marine Diesel Engine ~4,500 kW"
+    mcr_power_kw: 4500.0     # Rated engine power [kW]
     num_propellers: 1
-    avs: 58.0
-    full_ahead_rpm: 105.0
-    full_ahead_speed_kn: 15.5
+    propeller_diameter: 4.60 # Propeller diameter [m]
+    rudder_area: 15.20       # Rudder area [m²]
+    rudder_height: 4.50      # Rudder height [m]
+    rudder_chord: 3.40       # Rudder chord [m]
+    rudder_max_angle: 35.0   # Maximum rudder angle [deg]
+    avs: 58.0                # Angle of vanishing stability [deg]
+    full_ahead_rpm: 130.0    # Engine full ahead RPM
+    full_ahead_speed_kn: 14.5 # Full ahead speed [knots]
+    service_speed_kn: 13.5   # Service speed [knots]
 
 connection:
   type: "udp"

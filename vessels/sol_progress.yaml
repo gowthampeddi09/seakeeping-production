@@ -1,39 +1,60 @@
 # vessels/sol_progress.yaml
 # Vessel Specification: SOL PROGRESS (IMO: 9322865, Built: 2006)
+# Former Names: Asiatic Glory, Irem Kalkavan, OEL Progress
+# Shipyard: Sedef Shipbuilding Industry Inc., Tuzla, Turkey (Yard No: 135)
 # Multi-protocol: NMEA 0183 (Navigation) + Modbus TCP (Engine/Steering PLC)
 vessel:
   name: "SOL PROGRESS"
   imo: "9322865"
+  call_sign: "3FJM3"
+  mmsi: "351018000"
+  flag: "Panama"
+  vessel_type: "Container Ship (Feeder 1,155 TEU)"
   static:
-    # Principal Particulars & Hydrostatics
-    ship_length: 190.0       # LOA (Length Overall) [m]
-    lpp: 182.0               # LPP (Length Between Perpendiculars) [m]
-    loa: 190.0               # LOA [m]
-    ship_beam: 32.2          # Maximum breadth (Beam) [m]
-    beam: 32.2               # Beam [m]
-    ship_draft: 12.5         # Mean draft [m]
-    draft_fwd: 12.5          # Forward draft [m]
-    draft_aft: 12.5           # Aft draft [m]
-    draft_mean: 12.5         # Mean draft [m]
-    displacement: 55000.0    # Total vessel mass/displacement [tonnes]
-    block_coefficient: 0.80  # Block coefficient Cb
-    cb: 0.80
-    KG: 12.0                 # Height of CG above keel [m]
-    GM_static: 1.50          # Static metacentric height [m]
-    lcg: 0.0                 # Longitudinal position of CG [m]
-    freeboard: 5.0           # Height of weather deck above waterline [m]
-    air_draft: 45.0          # Height from waterline to highest mast [m]
-    water_density: 1025.0    # Seawater density [kg/m³]
+    # Principal Particulars & Hydrostatics (Sedef Shipyard / ClassNK / BalticShipping Verified)
+    ship_length: 149.60      # Length Overall (LOA) [m]
+    loa: 149.60              # Length Overall (LOA) [m]
+    lpp: 139.60              # Length Between Perpendiculars (LBP) [m]
+    ship_beam: 22.70         # Moulded Breadth (Beam) [m]
+    beam: 22.70              # Beam [m]
+    depth_moulded: 11.30     # Moulded Depth to main deck [m]
+    ship_draft: 7.80         # Summer Load Draught [m]
+    draft_summer: 7.80       # Summer Load Draught [m]
+    draft_design: 7.30       # Design Draught [m]
+    draft_mean: 7.80         # Operating Mean Draught [m]
+    draft_fwd: 7.70          # Forward Draught [m]
+    draft_aft: 7.90          # Aft Draught [m]
+    displacement: 18000.0    # Full load displacement [tonnes] (DWT 12,697 t + Lightship 5,303 t)
+    dwt: 12697.0             # Summer Deadweight [tonnes]
+    gross_tonnage: 10308.0   # Gross Tonnage [GT]
+    net_tonnage: 5093.0      # Net Tonnage [NT]
+    lightship: 5303.0        # Lightship displacement [tonnes]
+    block_coefficient: 0.709 # Block coefficient Cb = Vol / (Lpp * B * T)
+    cb: 0.709
+    KG: 8.85                 # Height of CG above keel [m] (typical container laden)
+    KM: 10.20                # Transverse metacentric height above keel [m]
+    GM_static: 1.35          # Static metacentric height [m] (KM - KG)
+    lcg: 0.50                # Longitudinal position of CG fwd of midships [m]
+    freeboard: 3.50          # Summer freeboard [m] (Depth 11.30m - Draft 7.80m)
+    air_draft: 38.50         # Height from summer waterline to highest mast [m]
+    water_density: 1025.0    # Standard seawater density [kg/m³]
 
     # Propulsion & Maneuvering Particulars
+    main_engine: "MAN B&W 7S50MC-C (7-Cylinder Slow Speed 2-Stroke Diesel)"
+    mcr_power_kw: 10500.0    # Maximum Continuous Rating [kW]
+    csr_power_kw: 8925.0     # Continuous Service Rating [kW] (85% MCR)
     num_propellers: 1
-    propeller_diameter: 6.2  # Propeller diameter [m]
-    rudder_area: 28.5        # Projected rudder area [m²]
-    rudder_height: 5.5       # Vertical span of rudder [m]
-    rudder_chord: 5.2        # Chord length of rudder [m]
+    propeller_diameter: 5.40 # Propeller diameter [m] (Alstom bronze FPP)
+    propeller_pitch_ratio: 0.95
+    rudder_area: 19.20       # Projected rudder area [m²] (Semi-balanced spade)
+    rudder_height: 5.20      # Vertical span of rudder [m]
+    rudder_chord: 3.70       # Chord length of rudder [m]
+    rudder_max_angle: 35.0   # Maximum rudder angle [deg]
     avs: 55.0                # Angle of vanishing stability [deg]
-    full_ahead_rpm: 105.0    # Engine full ahead RPM
-    full_ahead_speed_kn: 14.5 # Full ahead speed [knots]
+    full_ahead_rpm: 127.0    # Engine full ahead RPM (MCR rated)
+    service_rpm: 115.0       # Continuous service RPM
+    full_ahead_speed_kn: 19.5 # Full trial speed [knots]
+    service_speed_kn: 18.0   # Service speed [knots]
 
 # NMEA 0183 Connection (Navigation Bridge)
 connection:
@@ -101,7 +122,7 @@ sensor_map:
 
   wind_speed:
     sentences: ["WIMWD", "WIMWV"]
-    field_index: 5
+    field_index: 3
     unit: "knots"
     conversion: 0.5144
     range: [0.0, 60.0]
@@ -176,7 +197,7 @@ sensor_map:
     field_index: 3
     unit: "seconds"
     conversion: 1.0
-    range: [2.0, 30.0]
+    range: [0.3, 30.0]
     timeout_ms: 5000
 
   depth:
@@ -190,6 +211,38 @@ sensor_map:
   wave_direction:
     sentences: ["PWAV", "WMWAV"]
     field_index: 4
+    unit: "degrees"
+    conversion: 1.0
+    range: [0.0, 360.0]
+    timeout_ms: 5000
+
+  engine_rpm:
+    sentences: ["IIRPM", "VWRPM", "ERRPM", "RPM"]
+    field_index: 3
+    unit: "rpm"
+    conversion: 1.0
+    range: [0.0, 1000.0]
+    timeout_ms: 2000
+
+  rudder:
+    sentences: ["IIRSA", "GPRSA", "RSA"]
+    field_index: 1
+    unit: "degrees"
+    conversion: 1.0
+    range: [-45.0, 45.0]
+    timeout_ms: 2000
+
+  current_speed:
+    sentences: ["VDVDR", "IIVDR", "VDR"]
+    field_index: 5
+    unit: "knots"
+    conversion: 0.5144
+    range: [0.0, 10.0]
+    timeout_ms: 5000
+
+  current_direction:
+    sentences: ["VDVDR", "IIVDR", "VDR"]
+    field_index: 1
     unit: "degrees"
     conversion: 1.0
     range: [0.0, 360.0]

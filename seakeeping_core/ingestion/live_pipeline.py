@@ -12,6 +12,7 @@ Connection Modes:
     --port /dev/pts/6                   Serial PTY (Kave Simulator via socat)
     --tcp 192.168.1.217:8888            TCP socket (remote NMEA server)
     --udp-port 10110                    UDP broadcast (ship network via Moxa NPort)
+    --ros                               ROS2 topic subscriber (simulator NMEA stream)
     --replay <file.nmea>                Replay recorded NMEA log file
 
 Usage:
@@ -67,7 +68,10 @@ class LiveShipPipeline:
 
     def __init__(self, config_path: str, enable_ai: bool = True,
                  weights_path: str = "checkpoints/best.pth",
-                 norm_path: str = "checkpoints/norm_stats.npz"):
+                 norm_path: str = "checkpoints/norm_stats.npz",
+                 stream_mode: bool = True,
+                 dashboard_mode: bool = True,
+                 dashboard_interval: float = 2.0):
         self.config = VesselConfig(config_path)
         self.parser = NMEAParser(self.config)
         self.bus = UniversalShipDataBus(self.config)
@@ -77,6 +81,11 @@ class LiveShipPipeline:
         self.json_log_file = None
         self.modbus_adapter = None
         self.static_params = self.config.get_static_profile()
+        self.stream_mode = stream_mode
+        self.dashboard_mode = dashboard_mode
+        self.dashboard_interval = dashboard_interval
+        self._last_dashboard_time = 0.0
+        self.latest_prediction = None
 
         # Initialize Modbus adapter if vessel has PLC configuration
         if self.config.has_modbus():
@@ -87,12 +96,12 @@ class LiveShipPipeline:
                     self.config.modbus_map,
                 )
                 if self.modbus_adapter.connect():
-                    print(f"✅ Modbus adapter connected")
+                    print(f"[OK] Modbus adapter connected successfully.")
                 else:
-                    print(f"⚠️  Modbus connection failed. Running NMEA-only.")
+                    print(f"[WARN] Modbus connection failed. Running in NMEA-only mode.")
                     self.modbus_adapter = None
             except ImportError:
-                print(f"⚠️  pymodbus not installed. Skipping Modbus ingestion.")
+                print(f"[INFO] pymodbus not installed. Skipping Modbus ingestion.")
                 self.modbus_adapter = None
 
         # Initialize AI predictor only if weights exist and AI is enabled
@@ -108,9 +117,9 @@ class LiveShipPipeline:
                     norm_stats_path=str(n),
                     device="cpu"
                 )
-                print(f"✅ Seakeeping AI Model loaded from {weights_path}")
+                print(f"[OK] Seakeeping AI Model loaded from {weights_path}")
             else:
-                print(f"⚠️  Model weights not found. Running in DATA-BUS-ONLY mode (no AI predictions).")
+                print(f"[WARN] Model weights not found. Running in DATA-BUS-ONLY mode (no AI predictions).")
                 self.enable_ai = False
 
     def process_nmea_line(self, line: str) -> dict:
@@ -179,6 +188,7 @@ class LiveShipPipeline:
                 # Pass real sensor health from quality engine to predictor
                 sensor_health = payload.get('sensor_health', 1.0)
                 prediction = self.predictor.predict(sensor_dict, sensor_health=sensor_health)
+                self.latest_prediction = prediction
 
         # Extract parsed field names (handles both 3-tuple and 4-tuple formats)
         field_list = []
@@ -192,15 +202,16 @@ class LiveShipPipeline:
             'parsed_fields': field_list,
         }
 
+
     # ---------------------------------------------------------------
     # Connection Mode: Serial PTY (Kave Simulator via socat)
     # ---------------------------------------------------------------
     def run_serial(self, port_name: str, baud: int = 4800):
         """Reads from a serial port / PTY device (e.g. /dev/pts/6)."""
         import serial
-        print(f"📡 Connecting to Serial Port: {port_name} ({baud} baud)...")
+        print(f"[CONNECT] Connecting to Serial Port: {port_name} ({baud} baud)...")
         ser = serial.Serial(port_name, baud, timeout=1.0)
-        print(f"✅ Serial connected! Reading NMEA 0183 stream...")
+        print(f"[OK] Serial connected. Ingesting NMEA 0183 stream...")
         self._read_loop(lambda: ser.readline().decode('ascii', errors='ignore'))
 
     # ---------------------------------------------------------------
@@ -208,11 +219,11 @@ class LiveShipPipeline:
     # ---------------------------------------------------------------
     def run_tcp(self, host: str, port: int):
         """Connects to a TCP NMEA server (e.g. 192.168.1.217:8888)."""
-        print(f"📡 Connecting to TCP: {host}:{port}...")
+        print(f"[CONNECT] Connecting to TCP: {host}:{port}...")
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.connect((host, port))
         stream = sock.makefile('r')
-        print(f"✅ TCP connected! Reading NMEA 0183 stream...")
+        print(f"[OK] TCP connected. Ingesting NMEA 0183 stream...")
         self._read_loop(lambda: stream.readline())
 
     # ---------------------------------------------------------------
@@ -220,29 +231,109 @@ class LiveShipPipeline:
     # ---------------------------------------------------------------
     def run_udp(self, ip: str = "0.0.0.0", port: int = 10110):
         """Listens to UDP broadcast NMEA stream on ship network."""
-        print(f"📡 Binding to UDP Socket: {ip}:{port}...")
+        print(f"[BIND] Binding to UDP Socket: {ip}:{port}...")
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind((ip, port))
-        print(f"✅ UDP Socket active! Listening for NMEA broadcast...")
+        print(f"[OK] UDP socket active. Listening for NMEA broadcast...")
         def read_udp():
             data, addr = sock.recvfrom(4096)
             return data.decode('ascii', errors='ignore')
         self._read_loop(read_udp, multiline=True)
 
     # ---------------------------------------------------------------
+    # Connection Mode: ROS2 Topic Subscriber (Pure NMEA 0183 stream)
+    # ---------------------------------------------------------------
+    # Simulator publishes standard NMEA 0183 sentences to subtopics under /a4/simulation/nmea/:
+    #   /gga, /hdt, /rmc, /vtg, /rot, /rpm, /rudder, /depth, /wind, /wave, /water_current, /phtro
+    NMEA_SUBTOPICS = [
+        'gga', 'hdt', 'rmc', 'vtg', 'rot', 'rpm',
+        'rudder', 'depth', 'wind', 'wave', 'water_current', 'phtro',
+    ]
+
+    def run_ros(self, topic: str = '/a4/simulation/nmea'):
+        """Subscribes strictly to all NMEA 0183 subtopics under /a4/simulation/nmea/."""
+        try:
+            import rclpy
+            from rclpy.node import Node
+            from std_msgs.msg import String
+        except ImportError:
+            print("[ERROR] rclpy not installed. Install ROS2 Humble or use --udp-port / --tcp instead.")
+            return
+
+        pipeline_ref = self
+        subtopics = self.NMEA_SUBTOPICS
+        base = topic.rstrip('/')
+
+        class NMEASubscriber(Node):
+            def __init__(self):
+                super().__init__('seakeeping_live_pipeline')
+                self.sentence_count = 0
+
+                # Subscribe strictly to each NMEA subtopic
+                self.subs = []
+                for sub in subtopics:
+                    full_topic = f"{base}/{sub}"
+                    s = self.create_subscription(String, full_topic, self.on_message, 50)
+                    self.subs.append(s)
+                    print(f"  [SUB] Subscribed to NMEA: {full_topic}")
+
+                # Also subscribe to the parent topic (in case data arrives there too)
+                s = self.create_subscription(String, base, self.on_message, 50)
+                self.subs.append(s)
+
+                print(f"\n[OK] Listening strictly on {len(self.subs)} NMEA 0183 topics under {base}/")
+                print(f"     Ingesting live pure NMEA 0183 stream (Zero JSON)...\n")
+
+            def on_message(self, msg):
+                raw = msg.data.strip()
+                if not raw:
+                    return
+                # A single message may contain multiple lines
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if not line or not (line.startswith('$') or line.startswith('!')):
+                        continue
+                    self.sentence_count += 1
+                    res = pipeline_ref.process_nmea_line(line)
+                    pipeline_ref.print_live_status(self.sentence_count, line, res)
+
+            def on_nmea(self, msg):
+                self.on_message(msg)
+
+        rclpy.init()
+        node = NMEASubscriber()
+        try:
+            rclpy.spin(node)
+        except (KeyboardInterrupt, BaseException):
+            print(f"\n[STOP] ROS2 ingestion stopped. Processed {node.sentence_count} sentences.")
+        finally:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+            if rclpy.ok():
+                try:
+                    rclpy.shutdown()
+                except Exception:
+                    pass
+
+
+    # ---------------------------------------------------------------
     # Connection Mode: File Replay (recorded NMEA log)
     # ---------------------------------------------------------------
     def run_replay(self, filepath: str, speed: float = 1.0):
         """Replays a recorded NMEA log file at configurable speed."""
-        print(f"📼 Replaying NMEA log: {filepath} (speed: {speed}x)...")
+        print(f"[REPLAY] Replaying NMEA log: {filepath} (speed: {speed}x)...")
+        sentence_count = 0
         with open(filepath, 'r') as f:
             for line in f:
                 line = line.strip()
                 if line and (line.startswith('$') or line.startswith('!')):
+                    sentence_count += 1
                     res = self.process_nmea_line(line)
-                    self._print_prediction(res)
+                    self.print_live_status(sentence_count, line, res)
                     time.sleep(0.1 / speed)
-        print("📼 Replay complete.")
+        print("[OK] Replay complete.")
 
     # ---------------------------------------------------------------
     # Common read loop
@@ -263,19 +354,64 @@ class LiveShipPipeline:
                         continue
                     sentence_count += 1
                     res = self.process_nmea_line(line)
-
-                    # Print parsed fields for first 20 sentences (debug)
-                    if sentence_count <= 20 and res['parsed_fields']:
-                        fields_str = ", ".join(f"{f}={v:.2f}" for f, v in res['parsed_fields'])
-                        print(f"  📥 [{sentence_count:4d}] {line[:40]:40s} → {fields_str}")
-
-                    self._print_prediction(res)
+                    self.print_live_status(sentence_count, line, res)
 
         except KeyboardInterrupt:
-            print(f"\n🛑 Ingestion stopped. Processed {sentence_count} sentences.")
+            print(f"\n[STOP] Ingestion stopped. Processed {sentence_count} sentences.")
+
+    def print_live_status(self, sentence_count: int, line: str, res: dict):
+        """
+        Displays live ingestion data continuously.
+        1. Continuously streams parsed fields for incoming sentences.
+        2. Periodically renders a clean live vessel status telemetry dashboard.
+        3. Displays AI seakeeping predictions when available.
+        """
+        now = time.time()
+
+        # 1. Continuous stream of parsed sentences
+        if self.stream_mode and res.get('parsed_fields'):
+            fields_str = ", ".join(f"{f}={v:.2f}" for f, v in res['parsed_fields'])
+            clean_line = line.strip()
+            short_line = (clean_line[:38] + '..') if len(clean_line) > 40 else clean_line
+            print(f"  [DATA] [{sentence_count:5d}] {short_line:40s} -> {fields_str}")
+
+        # 2. Periodic Live Telemetry Dashboard
+        if self.dashboard_mode and (now - self._last_dashboard_time >= self.dashboard_interval):
+            self._last_dashboard_time = now
+            payload = res.get('universal_vessel_state_json', {})
+            raw = payload.get('raw_sensors', {})
+            health = payload.get('sensor_health', 0.0)
+            vessel_name = payload.get('vessel_info', {}).get('name', 'VESSEL')
+            ts = time.strftime('%H:%M:%S')
+
+            lat_v = raw.get('lat', 0.0)
+            lat_dir = 'N' if lat_v >= 0 else 'S'
+            lon_v = raw.get('lon', 0.0)
+            lon_dir = 'E' if lon_v >= 0 else 'W'
+
+            print(f"\n+-----------------------------------------------------------------------------+")
+            print(f"| VESSEL: {vessel_name.upper():18s} | TIME: {ts} | HEALTH: {health:4.0%} | MSGS: {sentence_count:6d} |")
+            print(f"+-----------------------------------------------------------------------------+")
+            print(f"| POS: {abs(lat_v):8.4f}{lat_dir}, {abs(lon_v):9.4f}{lon_dir}  | SOG: {raw.get('sog', 0.0):5.1f} kn | COG: {raw.get('cog', 0.0):5.1f} deg | HDG: {raw.get('heading', 0.0):5.1f} deg |")
+            print(f"| MOTION: Roll: {raw.get('roll', 0.0):+5.2f} deg | Pitch: {raw.get('pitch', 0.0):+5.2f} deg | YawRt: {raw.get('yaw_rate', 0.0):+5.2f} deg/m | Surge: {raw.get('surge_vel', 0.0):5.2f} m/s |")
+            print(f"| ENV: Wind: {raw.get('wind_speed', 0.0):4.1f} m/s @ {raw.get('wind_direction', 0.0):5.1f} deg | Hs: {raw.get('Hs', 0.0):4.2f} m  Tp: {raw.get('Tp', 0.0):4.1f} s | Current: {raw.get('current_speed', 0.0):4.2f} kn @ {raw.get('current_direction', 0.0):5.1f} deg |")
+            print(f"| MACH: Engine: {raw.get('engine_rpm', 0.0):5.1f} RPM | Rudder: {raw.get('rudder', 0.0):+5.1f} deg | Depth: {raw.get('depth', 0.0):5.1f} m | UKC: {raw.get('ukc', 0.0):5.1f} m |")
+
+            pred = res.get('prediction') or self.latest_prediction
+            if pred:
+                alert = pred.get('alert_level', 'NORMAL')
+                conf = pred.get('confidence_score', 0.0)
+                print(f"+-----------------------------------------------------------------------------+")
+                print(f"| AI: [{alert:7s}] | MaxRoll: {pred.get('max_roll_deg', 0.0):4.1f} deg | Conf: {conf:4.1f}% | Rec: Hdg {pred.get('recommended_heading_deg', 0.0):03.0f} deg  Spd {pred.get('recommended_speed_kn', 0.0):4.1f} kn |")
+
+            print(f"+-----------------------------------------------------------------------------+\n")
+
+        # 3. Continuous AI seakeeping predictions stream (when computed every 10 ticks)
+        if res.get('prediction'):
+            self._print_prediction(res)
 
     def _print_prediction(self, res):
-        """Prints AI prediction if available."""
+        """Prints AI prediction if available (legacy fallback)."""
         if res.get('prediction'):
             pred = res['prediction']
             ts = time.strftime('%H:%M:%S')
@@ -287,10 +423,9 @@ class LiveShipPipeline:
             spd = pred.get('recommended_speed_kn', '?')
             health = res['universal_vessel_state_json'].get('sensor_health', 0)
 
-            color = {'SAFE': '🟢', 'CAUTION': '🟡', 'WARNING': '🟠', 'DANGER': '🔴'}.get(alert, '⚪')
-            print(f"\n  {color} [{ts}] {alert:8s} | Roll: {roll:5.1f}° | "
+            print(f"\n  [{alert:8s}] [{ts}] | Roll: {roll:5.1f} deg | "
                   f"{risk:25s} | Conf: {conf:5.1f}% | "
-                  f"Hdg→{hdg}° Spd→{spd}kn | Health: {health:.0%}")
+                  f"Rec: Hdg {hdg} deg  Spd {spd} kn | Health: {health:.0%}")
 
 
 # ============================================================================
@@ -302,7 +437,7 @@ def run_self_test(config_path: str):
     from the user's Kave NMEA Simulator output.
     """
     print("=" * 75)
-    print("     UNIVERSAL INGESTION PIPELINE — SELF-TEST")
+    print("     UNIVERSAL INGESTION PIPELINE -- SELF-TEST")
     print("=" * 75)
 
     pipeline = LiveShipPipeline(config_path=config_path, enable_ai=False)
@@ -325,6 +460,12 @@ def run_self_test(config_path: str):
         "$WIMWD,360.0,T,352.9,M,20.6,N,40.0,M*52",
         "$WIMWV,360.0,T,40.0,M,A*17",
         "$GPROT,0.0,A*31",
+        # Live simulator sentences (from colleague's ROS2 simulator)
+        "$PHTRO,-0.01,1.34,7.73,0.06*7E",
+        "$IIRPM,E,1,537.6,100.0,A*50",
+        "$IIRSA,0.1,A,,*2E",
+        "$VDVDR,043.4,T,043.4,M,1.6,N*2C",
+        "$PWAV,0.64,0.12,5.47,293.7*28",
     ]
 
     print(f"\nFeeding {len(test_sentences)} real simulator sentences...\n")
@@ -336,9 +477,9 @@ def run_self_test(config_path: str):
         if fields:
             parsed_any = True
             fields_str = ", ".join(f"{f}={v:.2f}" for f, v in fields)
-            print(f"  ✅ {sentence[:45]:45s} → {fields_str}")
+            print(f"  [MATCH] {sentence[:45]:45s} -> {fields_str}")
         else:
-            print(f"  ⬚  {sentence[:45]:45s} → (no mapped fields)")
+            print(f"  [SKIP]  {sentence[:45]:45s} -> (no mapped fields)")
 
     # Print final canonical state
     payload = pipeline.bus.get_canonical_payload()
@@ -350,9 +491,9 @@ def run_self_test(config_path: str):
     static = pipeline.config.get_static_profile()
     derived = FeatureDeriver.derive(raw, static)
 
-    print(f"\n{'─'*75}")
+    print(f"\n{'-'*75}")
     print(f"  CANONICAL VESSEL STATE (Universal JSON Bus Output)")
-    print(f"{'─'*75}")
+    print(f"{'-'*75}")
     print(f"  Vessel:           {payload['vessel_info']['name']} (IMO {payload['vessel_info']['imo']})")
     print(f"  Sensor Health:    {payload['sensor_health']:.0%}")
 
@@ -363,92 +504,93 @@ def run_self_test(config_path: str):
         q = quality.get(k, 'N/A')
         conf = confidences.get(k, 0.0)
         state_markers = {
-            'LIVE': '✅', 'DEGRADED': '🔶', 'KALMAN_ESTIMATED': '🔷',
-            'DRIFTING': '📉', 'NOISY': '📶', 'PHYSICS_ESTIMATED': '🔬',
-            'SPIKE': '⚡', 'SYNTHETIC': '🔶', 'PHANTOM': '👻',
-            'FROZEN': '🧊', 'STALE': '⏰', 'MISSING': '❌', 'INITIALIZING': '⏳',
+            'LIVE': '[LIVE]', 'DEGRADED': '[DEGR]', 'KALMAN_ESTIMATED': '[KLMN]',
+            'DRIFTING': '[DRIF]', 'NOISY': '[NOIS]', 'PHYSICS_ESTIMATED': '[PHYS]',
+            'SPIKE': '[SPIK]', 'SYNTHETIC': '[SYNT]', 'PHANTOM': '[PHAN]',
+            'FROZEN': '[FROZ]', 'STALE': '[STAL]', 'MISSING': '[MISS]', 'INITIALIZING': '[INIT]',
+            'STATIC_CONFIG': '[STAT]', 'UNAVAILABLE': '[UNAV]',
         }
-        marker = state_markers.get(q, '❓')
-        print(f"    {marker} {k:20s} = {v:10.4f}  [{q:20s}] conf: {conf:.3f}")
+        marker = state_markers.get(q, '[INFO]')
+        print(f"    {marker:7s} {k:20s} = {v:10.4f}  [{q:20s}] conf: {conf:.3f}")
 
     print(f"\n  --- Derived Features (computed by MODEL, not bus) ---")
     for k, v in derived.items():
-        print(f"    📐 {k:20s} = {v:10.4f}")
+        print(f"    [DERIV] {k:20s} = {v:10.4f}")
 
     print(f"\n  --- Missing Sensor Coverage ---")
-    non_live = {'MISSING', 'STALE', 'INITIALIZING', 'SYNTHETIC', 'PHYSICS_ESTIMATED', 'KALMAN_ESTIMATED'}
+    non_live = {'MISSING', 'STALE', 'INITIALIZING', 'SYNTHETIC', 'PHYSICS_ESTIMATED', 'KALMAN_ESTIMATED', 'UNAVAILABLE'}
     missing = [k for k, v in quality.items() if v in non_live]
     live = [k for k, v in quality.items() if v in ['LIVE', 'DEGRADED']]
-    print(f"    LIVE sensors:       {len(live):2d} → {', '.join(live) if live else 'None'}")
-    print(f"    Missing/Synthetic:  {len(missing):2d} → {', '.join(missing) if missing else 'None'}")
+    print(f"    LIVE sensors:       {len(live):2d} -> {', '.join(live) if live else 'None'}")
+    print(f"    Missing/Synthetic:  {len(missing):2d} -> {', '.join(missing) if missing else 'None'}")
 
     # Validation checks
-    print(f"\n{'─'*75}")
+    print(f"\n{'-'*75}")
     print(f"  VALIDATION CHECKS")
-    print(f"{'─'*75}")
+    print(f"{'-'*75}")
 
     checks = []
 
     # Check 1: Heading parsed
     if raw.get('heading', -1) == 0.0 and any('HCHDT' in s for s in test_sentences):
-        checks.append(('✅', 'Heading parsed (0.0° True from HCHDT)'))
+        checks.append(('[PASS]', 'Heading parsed (0.0 deg True from HCHDT)'))
     elif raw.get('heading', 0) > 0:
-        checks.append(('✅', f'Heading parsed ({raw["heading"]}° from HCHDM/HCHDG)'))
+        checks.append(('[PASS]', f'Heading parsed ({raw["heading"]} deg from HCHDM/HCHDG)'))
     else:
-        checks.append(('❌', 'Heading NOT parsed'))
+        checks.append(('[FAIL]', 'Heading NOT parsed'))
 
     # Check 2: Wind parsed
     if raw.get('wind_speed', 0) > 0:
-        checks.append(('✅', f'Wind parsed ({raw["wind_speed"]:.1f} m/s from WIMWD)'))
+        checks.append(('[PASS]', f'Wind parsed ({raw["wind_speed"]:.1f} m/s from WIMWD)'))
     else:
-        checks.append(('❌', 'Wind speed NOT parsed'))
+        checks.append(('[FAIL]', 'Wind speed NOT parsed'))
 
     # Check 3: Wind direction parsed
     if quality.get('wind_direction') == 'LIVE':
-        checks.append(('✅', f'Wind direction parsed ({raw["wind_direction"]}°)'))
+        checks.append(('[PASS]', f'Wind direction parsed ({raw["wind_direction"]} deg)'))
     else:
-        checks.append(('⚠️', 'Wind direction not parsed from stream'))
+        checks.append(('[WARN]', 'Wind direction not parsed from stream'))
 
     # Check 4: Rudder
     if quality.get('rudder') == 'LIVE':
-        checks.append(('✅', f'Rudder angle parsed ({raw["rudder"]}°)'))
+        checks.append(('[PASS]', f'Rudder angle parsed ({raw["rudder"]} deg)'))
     else:
-        checks.append(('⚠️', 'Rudder not parsed'))
+        checks.append(('[WARN]', 'Rudder not parsed'))
 
     # Check 5: RPM
     if quality.get('engine_rpm') == 'LIVE':
-        checks.append(('✅', f'Engine RPM parsed ({raw["engine_rpm"]} RPM)'))
+        checks.append(('[PASS]', f'Engine RPM parsed ({raw["engine_rpm"]} RPM)'))
     else:
-        checks.append(('⚠️', 'Engine RPM not parsed'))
+        checks.append(('[WARN]', 'Engine RPM not parsed'))
 
     # Check 6: Synthetic overlay
     if quality.get('roll') == 'SYNTHETIC':
-        checks.append(('🔶', 'Roll = SYNTHETIC (no MRU/IMU in simulator — OK for testing)'))
+        checks.append(('[INFO]', 'Roll = SYNTHETIC (no MRU/IMU in stream -- fallback active)'))
     elif quality.get('roll') == 'LIVE':
-        checks.append(('✅', f'Roll = LIVE ({raw["roll"]}°)'))
+        checks.append(('[PASS]', f'Roll = LIVE ({raw["roll"]} deg)'))
 
     # Check 7: Depth parsed
     if quality.get('depth') == 'LIVE':
-        checks.append(('✅', f'Depth parsed ({raw.get("depth", 0)}m from echo sounder)'))
+        checks.append(('[PASS]', f'Depth parsed ({raw.get("depth", 0)}m from echo sounder)'))
     else:
-        checks.append(('⚠️', 'Depth not parsed'))
+        checks.append(('[WARN]', 'Depth not parsed'))
 
     # Check 8: Derived features (computed by model, validated here)
     if derived['res_ratio'] > 0:
-        checks.append(('✅', f'Resonance ratio computed ({derived["res_ratio"]:.3f})'))
+        checks.append(('[PASS]', f'Resonance ratio computed ({derived["res_ratio"]:.3f})'))
     else:
-        checks.append(('⚠️', 'Resonance ratio is zero'))
+        checks.append(('[WARN]', 'Resonance ratio is zero'))
 
     for marker, msg in checks:
-        print(f"    {marker} {msg}")
+        print(f"    {marker:7s} {msg}")
 
     # Final summary
     print(f"\n{'='*75}")
     if parsed_any and raw['wind_speed'] > 0:
-        print(f"  ✅ SELF-TEST PASSED — Pipeline parsing real NMEA data correctly.")
-        print(f"     {len(live)} sensors LIVE, {len(missing)} channels using fallback/synthetic overlay.")
+        print(f"  [PASS] SELF-TEST PASSED -- Pipeline parsing real NMEA data correctly.")
+        print(f"         {len(live)} sensors LIVE, {len(missing)} channels using fallback/synthetic overlay.")
     else:
-        print(f"  ❌ SELF-TEST FAILED — Check YAML sentence mappings.")
+        print(f"  [FAIL] SELF-TEST FAILED -- Check YAML sentence mappings.")
     print(f"{'='*75}")
 
     # Print full JSON for other models to consume
@@ -474,6 +616,10 @@ Connection Examples:
   UDP Broadcast (Ship Network):
     python -m seakeeping_core.ingestion.live_pipeline --udp-port 10110
 
+  ROS2 Topic (Simulator):
+    python -m seakeeping_core.ingestion.live_pipeline --config vessels/sol_progress.yaml --ros
+    python -m seakeeping_core.ingestion.live_pipeline --config vessels/sol_progress.yaml --ros --ros-topic /a4/simulation/nmea
+
   File Replay:
     python -m seakeeping_core.ingestion.live_pipeline --replay recorded.nmea
 
@@ -490,21 +636,47 @@ Connection Examples:
                      help="UDP port number (e.g. 10110)")
     ap.add_argument("--replay", type=str, default=None,
                      help="Path to recorded NMEA log file for replay")
+    ap.add_argument("--ros", action="store_true",
+                     help="Subscribe to ROS2 topic for NMEA sentences")
+    ap.add_argument("--ros-topic", type=str, default="/a4/simulation/nmea",
+                     help="ROS2 topic name (default: /a4/simulation/nmea)")
     ap.add_argument("--test", action="store_true",
                      help="Run self-test with real simulator sentences")
     ap.add_argument("--log-json", type=str, default=None,
                      help="Path to write JSON state log (for other models)")
+    ap.add_argument("--no-stream", action="store_true", default=False,
+                     help="Disable continuous incoming sentence stream")
+    ap.add_argument("--no-dashboard", action="store_true", default=False,
+                     help="Disable periodic telemetry status dashboard")
+    ap.add_argument("--interval", type=float, default=2.0,
+                     help="Seconds between telemetry dashboard updates (default: 2.0s)")
+    ap.add_argument("--ai", action="store_true", default=False,
+                     help="Enable Seakeeping AI neural network predictions")
+    ap.add_argument("--no-ai", action="store_true", default=False,
+                     help="Run in data-bus-only mode without AI predictions")
     args = ap.parse_args()
 
     if args.test:
         run_self_test(args.config)
         return
 
-    pipeline = LiveShipPipeline(config_path=args.config)
+    enable_ai = True
+    if args.no_ai:
+        enable_ai = False
+    elif not args.ai:
+        enable_ai = Path("checkpoints/best.pth").exists()
+
+    pipeline = LiveShipPipeline(
+        config_path=args.config,
+        enable_ai=enable_ai,
+        stream_mode=not args.no_stream,
+        dashboard_mode=not args.no_dashboard,
+        dashboard_interval=args.interval,
+    )
 
     if args.log_json:
         pipeline.json_log_file = open(args.log_json, 'a')
-        print(f"📝 Logging JSON state to: {args.log_json}")
+        print(f"[INFO] Logging canonical JSON state to: {args.log_json}")
 
     if args.port:
         pipeline.run_serial(args.port)
@@ -513,10 +685,12 @@ Connection Examples:
         pipeline.run_tcp(host, int(port))
     elif args.udp_port:
         pipeline.run_udp(port=args.udp_port)
+    elif args.ros:
+        pipeline.run_ros(topic=args.ros_topic)
     elif args.replay:
         pipeline.run_replay(args.replay)
     else:
-        print("ℹ️  No connection specified. Running self-test...")
+        print("[INFO] No external connection specified. Running pipeline self-test...")
         run_self_test(args.config)
 
 

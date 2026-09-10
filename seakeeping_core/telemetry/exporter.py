@@ -383,9 +383,9 @@ class TelemetryExporter:
 
                 # --- NEW GROUND TRUTH LABELS (OBSERVED OUTCOME + PHYSICAL MECHANISM) ---
                 # REASONING:
-                # Uses backfilled actual observed max roll over 30s horizon scaled against Angle of Vanishing
-                # Stability (AVS) to gauge true physical severity, gated by mechanism conditions.
-                actual_roll = rec.get('actual_max_roll', flat_row.get('roll', 0.0))
+                actual_roll = row.get('actual_max_roll', flat_row.get('roll', 0.0))
+                if pd.isna(actual_roll):
+                    actual_roll = flat_row.get('roll', 0.0)
                 avs_val = static.get('avs', 55.0)
                 roll_severity = float(np.clip(abs(actual_roll) / (0.5 * avs_val), 0.0, 1.0))
                 abs_enc = abs(enc_angle)

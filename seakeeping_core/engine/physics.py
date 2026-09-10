@@ -589,4 +589,4 @@ if __name__ == "__main__":
           f"PureLoss={r3.pure_loss_risk:.2f} | ADSM={r3.approx_dynamic_stability_margin:.2f}")
 
     print(f"\n{'='*70}")
-    print("All physics engine V2 tests completed ✓")
+    print("All physics engine V2 tests completed successfully.")

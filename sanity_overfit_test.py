@@ -25,7 +25,7 @@ def run_overfit_test():
     files = [f for f in files if not f.endswith("_SUMMARY.csv")]
 
     if not files:
-        print("❌ Error: No CSV data files found in", data_dir)
+        print("[ERROR] No CSV data files found in", data_dir)
         return False
 
     print(f"Loading sample file for overfit verification: {os.path.basename(files[0])}")
@@ -101,11 +101,11 @@ def run_overfit_test():
 
     print("-" * 60)
     if final_loss < 0.05:
-        print(f"✅ SANITY OVERFIT TEST PASSED! Final Loss = {final_loss:.6f} (< 0.05)")
+        print(f"[PASS] SANITY OVERFIT TEST PASSED! Final Loss = {final_loss:.6f} (< 0.05)")
         print("Network capacity and gradient flow are 100% verified.")
         return True
     else:
-        print(f"❌ Overfit Test Failed. Final Loss = {final_loss:.6f} (expected < 0.05)")
+        print(f"[FAIL] Overfit Test Failed. Final Loss = {final_loss:.6f} (expected < 0.05)")
         return False
 
 if __name__ == "__main__":

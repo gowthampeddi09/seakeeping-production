@@ -28,6 +28,32 @@ STATUS_SENTENCES = {
 }
 
 
+# Standard field index overrides for well-known NMEA 0183 sentences.
+# The YAML config stores ONE field_index per canonical field, but different
+# sentence types place the same data at different positions.
+# e.g., 'lat' is at index 2 in GGA but index 3 in RMC and index 1 in GLL.
+SENTENCE_FIELD_OVERRIDES = {
+    'RMC': {'lat': 3, 'lon': 5, 'sog': 7, 'cog': 8},
+    'GLL': {'lat': 1, 'lon': 3},
+    'GGA': {'lat': 2, 'lon': 4, 'altitude': 9},
+    'HDT': {'heading': 1},
+    'HDM': {'heading': 1},
+    'HDG': {'heading': 1},
+    'VTG': {'cog': 1, 'sog': 5, 'speed': 5},
+    'VHW': {'speed': 5},
+    'ROT': {'yaw_rate': 1},
+    'RPM': {'engine_rpm': 3},
+    'RSA': {'rudder': 1},
+    'DPT': {'depth': 1},
+    'DBT': {'depth': 3},
+    'VDR': {'current_direction': 1, 'current_speed': 5},
+    'MWV': {'wind_direction': 1, 'wind_speed': 3},
+    'MWD': {'wind_direction': 1, 'wind_speed': 5},
+    'PHTRO': {'roll': 1, 'pitch': 2, 'surge_vel': 3, 'sway_vel': 4},
+    'PWAV': {'wave_z': 1, 'Hs': 2, 'Tp': 3, 'wave_direction': 4},
+}
+
+
 class NMEAParser:
     def __init__(self, vessel_config: VesselConfig):
         self.config = vessel_config
@@ -98,13 +124,27 @@ class NMEAParser:
         else:
             # Check suffix fallback (e.g., HDT)
             sentence_id = talker_sentence[-3:] if len(talker_sentence) >= 3 else talker_sentence
+            seen_fields = set()
             for key, specs in self.lookup.items():
                 if key.endswith(sentence_id):
-                    matched_specs.extend(specs)
+                    for sp in specs:
+                        if sp['field'] not in seen_fields:
+                            seen_fields.add(sp['field'])
+                            matched_specs.append(sp)
 
         results = []
         for spec in matched_specs:
             field_idx = spec['field_index']
+
+            # Apply sentence-specific field index overrides (NMEA standard positions)
+            # e.g., GPRMC has lat at index 3, not index 2 like GPGGA
+            sentence_suffix = talker_sentence[-3:] if len(talker_sentence) >= 3 else talker_sentence
+            for override_key, overrides in SENTENCE_FIELD_OVERRIDES.items():
+                if talker_sentence == override_key or talker_sentence.endswith(override_key):
+                    if spec['field'] in overrides:
+                        field_idx = overrides[spec['field']]
+                        break
+
             if field_idx < len(parts):
                 raw_str = parts[field_idx].strip()
                 if raw_str == '':

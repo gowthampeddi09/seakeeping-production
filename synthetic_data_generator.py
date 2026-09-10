@@ -973,12 +973,12 @@ def generate_all_data(
                 })
 
                 if verbose:
-                    print(f"✓ max_roll={max_roll:.1f}° R_res={mean_res:.2f} "
+                    print(f"[OK] max_roll={max_roll:.1f} deg R_res={mean_res:.2f} "
                           f"p_s={max_p_sync:.2f} p_p={max_p_param:.2f} p_b={max_p_broach:.2f}")
 
             except Exception as e:
                 if verbose:
-                    print(f"✗ ERROR: {e}")
+                    print(f"[ERROR] {e}")
                 continue
 
     # Save summary

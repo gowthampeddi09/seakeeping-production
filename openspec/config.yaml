@@ -1,0 +1,99 @@
+schema: spec-driven
+
+# Project context
+# Injected into AI context when creating proposals, specifications, designs, and tasks.
+# Provides domain knowledge, constraints, and conventions to eliminate guessing and hallucination.
+context: |
+  Tech Stack:
+    - Python 3.10+, PyTorch, NumPy, SciPy, Pandas
+    - ROS2 (Humble / Foxy), C++ / CMake (CMakeLists.txt, package.xml)
+    - Docker & Docker Compose (multi-stage builds, production inference container)
+    - Pytest, Hypothesis (testing and verification)
+
+  Domain:
+    - Maritime Engineering & Deep Learning: Seakeeping Intact Stability Prediction (V2.1 Architecture).
+    - IMO MSC.1/Circ.1627: Real-time prediction of all 5 Second Generation Intact Stability Failure Modes:
+        1. Synchronous Roll (p_sync: ω_e ≈ ω_n in beam seas)
+        2. Parametric Roll (p_param: ω_e ≈ 2ω_n in head/following seas)
+        3. Broaching / Surf-riding (p_broach: V_ship ≈ V_wave in following seas)
+        4. Pure Loss of Stability (p_pure_loss: wave crest at midship, GM → 0)
+        5. Dead Ship Condition (p_dead_ship: RPM ≈ 0, beam-on drift under severe wind/waves)
+
+  Architecture (4-Layer Hybrid Pipeline):
+    - Layer 1 — Analytical Physics Engine (Always-On Fail-safe):
+        * Deterministic IMO safety criteria.
+        * Approximate Dynamic Stability Margin (ADSM) & Wave-Induced Speed Surplus (WISS).
+        * Angle of Vanishing Stability (AVS) boundary checks. Can trigger fail-safe overrides.
+    - Layer 2 — Hybrid TimesNet Core:
+        * 1D-to-2D transformation via 1D FFT for dominant frequency extraction.
+        * Multi-scale 2D Inception blocks for capturing temporal and multi-frequency harmonic interactions.
+    - Layer 3 — FiLM Modulator (Feature-wise Linear Modulation):
+        * Conditions intermediate neural representations dynamically using the ship's 9 static hydrostatic features.
+    - Layer 4 — Multi-Task Output Heads:
+        * Trajectory Head: 30-second continuous roll forecast (300 timesteps @ 10 Hz) using Huber Loss.
+        * Reasoning Head: Multi-label classification (BCEWithLogitsLoss) for 5 IMO failure modes.
+        * Course Recommendation Head: 72 heading bins (360° / 5°).
+
+  Input Tensors & Dimensions (Single Source of Truth: seakeeping_core/config.py):
+    - Sliding Window: Batch × 3000 × 19 (5 minutes @ 10 Hz).
+        * 9 Periodic Channels: roll, pitch, yaw, surge_vel, sway_vel, wave_z, wind_speed, Hs, Tp.
+        * 10 Slow/Derived Channels: speed (STW preferred, SOG fallback), heading, wave_direction,
+          wind_direction, rudder, rpm_ratio, enc_angle, wind_rel_angle, res_ratio, wave_steepness.
+    - Static Hydrostatic Conditioning: Batch × 9 (published once per voyage):
+        * ship_length, ship_beam, ship_draft, displacement, KG, GM_static, freeboard, air_draft, num_propellers.
+    - Normalization: Z-score standardization for all dynamic and static inputs using global statistics.
+      Targets remain in physical units for bridge interpretability.
+
+  Derived Physics Formulas:
+    - Wave encounter frequency: ω_e = |ω_w - (ω_w^2 / g) * V * cos(β)|
+    - Natural roll frequency: ω_n = sqrt(g * GM_static) / (0.4 * ship_beam)
+    - True resonance ratio: R_res = ω_e / ω_n
+    - Wave encounter angle β and wind relative angle normalized to [-180°, +180°]
+    - Wave steepness: s_w = Hs / (g * Tp^2 / (2 * pi))
+    - RPM ratio: clip(Engine RPM / Full Ahead RPM, 0.0, 1.0)
+
+  Ingestion & Quality Engine (seakeeping_core/ingestion/quality_engine.py):
+    - Handles sensor dropouts, blackouts, frequency drift, and timestamp jitter.
+    - Quality scoring and imputation for multi-sensor streams.
+
+  Coding & Development Conventions:
+    - Zero hardcoded magic numbers: All dimensions must reference seakeeping_core.config.CFG.
+    - All mathematical computations must be vectorized (NumPy / PyTorch).
+    - Code changes must be accompanied by sanity overfit tests or validation checks.
+    - Preserve ROS2 message interfaces and Docker deployment compatibility.
+
+# Per-artifact rules applied when generating planning artifacts
+rules:
+  proposal:
+    - "Keep proposals clear, concise, and focused on user/operational value."
+    - "Always include: Problem Statement, Scope, Non-Goals, and Impact on IMO Safety Compliance."
+    - "Specify which of the 4 pipeline layers (Physics, TimesNet, FiLM, Output Heads) or Ingestion are affected."
+
+  specs:
+    - "Every requirement must follow Gherkin-style acceptance scenarios (WHEN / THEN)."
+    - "Must specify exact tensor shapes, dtypes, and channel indexing when modifying inputs/outputs."
+    - "Must include physical unit definitions (degrees, m/s, radians, seconds, knots, tonnes)."
+    - "Every model or pipeline modification must define explicit edge cases (e.g. sensor blackout, zero speed, extreme sea states)."
+
+  design:
+    - "Include ASCII data flow or layer interaction diagrams."
+    - "Document tensor transformations across dimensions (e.g., [B, 3000, 19] -> [B, d_model, ...])."
+    - "Detail loss formulations (e.g., Huber loss delta, classification thresholding, weighting)."
+    - "Document latency, GPU memory impact, and real-time execution safety constraints."
+
+  tasks:
+    - "Break implementation into small, testable chunks (max 1-2 hours each)."
+    - "Order tasks strictly by dependency: Schema/Config -> Model/Engine -> Unit/Overfit Tests -> Integration."
+    - "Always mandate a verification task (e.g., python sanity_overfit_test.py or evaluate.py)."
+
+# Advisory operational guidance for workflows
+operations:
+  apply:
+    guidance:
+      - "Verify changes against seakeeping_core/config.py before writing code."
+      - "Never bypass failing sanity checks or shape assertions."
+      - "Keep code additions minimal, idiomatic, and fully typed."
+  archive:
+    guidance:
+      - "Ensure all tasks in tasks.md are marked completed (- [x])."
+      - "Sync all delta specs into main specs in openspec/specs/."
